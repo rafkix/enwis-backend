@@ -102,9 +102,10 @@ origins = list(
             "http://127.0.0.1:3000",
             "http://localhost:3001",
             "http://127.0.0.1:3001",
-            "https://unbend-unfilled-overlaid.ngrok-free.dev",
             "https://enwis.uz",
             "https://app.enwis.uz",
+            "https://test.enwis.uz",
+            "https://exams.enwis.uz",
             "https://api.enwis.uz",
             *(settings.ALLOWED_ORIGINS or []),
         ]

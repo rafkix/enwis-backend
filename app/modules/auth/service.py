@@ -53,6 +53,7 @@ class AuthService:
 
     def _now(self) -> datetime:
         from datetime import UTC
+
         return datetime.now(UTC).replace(tzinfo=None)
 
     def _hash(self, value: str) -> str:
@@ -78,9 +79,7 @@ class AuthService:
         clean_base = clean_base[:32] or "user"
         while True:
             username = f"{clean_base}_{secrets.randbelow(10000)}"
-            result = await self.db.execute(
-                select(User.id).where(User.username == username)
-            )
+            result = await self.db.execute(select(User.id).where(User.username == username))
             if not result.scalar_one_or_none():
                 return username
 
@@ -101,9 +100,7 @@ class AuthService:
 
         while True:
             candidate = f"{base}{secrets.randbelow(10000)}"
-            result = await self.db.execute(
-                select(User.id).where(User.username == candidate)
-            )
+            result = await self.db.execute(select(User.id).where(User.username == candidate))
             if not result.scalar_one_or_none():
                 return candidate
 
@@ -194,9 +191,7 @@ class AuthService:
 
     async def login(self, username: str, password: str, request: Request) -> dict:
         result = await self.db.execute(
-            select(User)
-            .options(selectinload(User.roles))
-            .where(User.username == username.lower())
+            select(User).options(selectinload(User.roles)).where(User.username == username.lower())
         )
         user = result.unique().scalar_one_or_none()
 
@@ -350,9 +345,7 @@ class AuthService:
         if not reset_token or reset_token.is_expired:
             raise HTTPException(400, "Token is invalid or has expired")
 
-        user_result = await self.db.execute(
-            select(User).where(User.id == reset_token.user_id)
-        )
+        user_result = await self.db.execute(select(User).where(User.id == reset_token.user_id))
         user = user_result.scalar_one_or_none()
         if not user:
             raise NotFoundException("User")
@@ -366,13 +359,14 @@ class AuthService:
         return {"success": True, "message": "Password reset successfully"}
 
     async def _send_sms_code(self, phone: str, code: str) -> None:
-        try:
-            provider: AbstractSMSProvider = (
-                EskizSMSProvider() if settings.ESKIZ_EMAIL else ConsoleSMSProvider()
-            )
-            await provider.send_otp(phone, code)
-        except Exception as exc:
-            logger.error("Failed to send SMS to %s: %s", phone, exc)
+        # FIX: exception endi yutilmaydi va chaqiruvchiga ko'tariladi.
+        # Avval bu yerda try/except bilan xato faqat log qilinib,
+        # keyin hech narsa qilinmasdi — natijada SMS yetib bormasa ham
+        # chaqiruvchi (register_send_code) buni bilmay 200 OK qaytarardi.
+        provider: AbstractSMSProvider = (
+            EskizSMSProvider() if settings.ESKIZ_EMAIL else ConsoleSMSProvider()
+        )
+        await provider.send_otp(phone, code)
 
     async def register_send_code(
         self, full_name: str, phone: str, password: str, request: Request
@@ -404,15 +398,14 @@ class AuthService:
             last.is_used = True
 
         code = generate_sms_code()
-        self.db.add(
-            PhoneRegistrationTicket(
-                phone=phone,
-                code_hash=self._hash(code),
-                full_name=full_name.strip(),
-                password_hash=hash_password(password),
-                expires_at=self._now() + timedelta(seconds=self.OTP_TTL_SECONDS),
-            )
+        ticket = PhoneRegistrationTicket(
+            phone=phone,
+            code_hash=self._hash(code),
+            full_name=full_name.strip(),
+            password_hash=hash_password(password),
+            expires_at=self._now() + timedelta(seconds=self.OTP_TTL_SECONDS),
         )
+        self.db.add(ticket)
         await self.db.commit()
 
         self.db.add(
@@ -425,7 +418,24 @@ class AuthService:
             )
         )
         await self.db.commit()
-        await self._send_sms_code(phone, code)
+
+        # FIX: SMS yuborish endi try/except bilan o'raladi. Muvaffaqiyatsiz
+        # bo'lsa: (1) ticket darhol is_used=True qilinadi — aks holda
+        # keyingi urinish 60s RESEND_COOLDOWN'ga tushib qoladi va
+        # foydalanuvchi hech qachon kod ololmaydi (cheksiz "kutish" tsikli);
+        # (2) foydalanuvchiga aniq 502 xatosi qaytariladi — "success: True"
+        # deb aldab qo'yilmaydi.
+        try:
+            await self._send_sms_code(phone, code)
+        except Exception as exc:
+            logger.error("SMS yuborilmadi (phone=%s), ticket bekor qilindi: %s", phone, exc)
+            ticket.is_used = True
+            await self.db.commit()
+            raise HTTPException(
+                502,
+                "SMS yuborishda xatolik yuz berdi. Birozdan keyin qayta urinib ko'ring.",
+            ) from exc
+
         return {
             "success": True,
             "message": f"Code sent. Valid for {self.OTP_TTL_SECONDS // 60} minutes.",
@@ -612,9 +622,7 @@ class AuthService:
         if not received_hash:
             raise HTTPException(401, "Missing initData hash")
 
-        data_check_string = "\n".join(
-            f"{k}={v}" for k, v in sorted(pairs.items())
-        )
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
         secret_key = hmac.new(
             b"WebAppData", settings.TELEGRAM_BOT_TOKEN.encode(), hashlib.sha256
         ).digest()
@@ -763,6 +771,7 @@ class AuthService:
             user.is_telegram_verified = True
         await self.db.commit()
         return {"provider": "telegram", "linked": True}
+
     async def unlink_telegram(self, user: User) -> dict:
         await self._unlink_provider(user, AuthProvider.TELEGRAM)
         user.telegram_id = None
@@ -790,6 +799,4 @@ class AuthService:
                 400,
                 "Set a password before unlinking your only sign-in",
             )
-        await self.db.execute(
-            delete(SocialAccount).where(SocialAccount.id == account.id)
-        )
+        await self.db.execute(delete(SocialAccount).where(SocialAccount.id == account.id))
