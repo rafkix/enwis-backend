@@ -5,8 +5,8 @@ url = "https://api.enwis.uz/api/v1/auth/register/send-code"
 # Server talab qilayotgan barcha maydonlarni kiritamiz
 payload = {
     "full_name": "Shohjahon",
-    "phone": "+998933288806",
-    "phoneNumber": "+998933288806",
+    "phone": "+998883298812",
+    "phoneNumber": "+998883298812",
     "password": "sizning_parolingiz"
 }
 

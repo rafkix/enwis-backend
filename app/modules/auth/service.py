@@ -190,8 +190,21 @@ class AuthService:
     # `register_send_code` / `register_verify`.
 
     async def login(self, username: str, password: str, request: Request) -> dict:
+        identifier = username.strip()
+        # Login (auto-generated) bo'yicha qidiramiz; agar u telefon
+        # ko'rinishida bo'lsa (foydalanuvchi login'ini unutib, telefon
+        # raqamini kiritsa — bu juda ehtimolli, chunki login hech qachon
+        # unga alohida ko'rsatilmagan bo'lishi mumkin edi), telefon
+        # bo'yicha ham qidiramiz.
+        conditions = [User.username == identifier.lower()]
+        normalized_phone = (
+            self._normalize_phone(identifier) if any(ch.isdigit() for ch in identifier) else None
+        )
+        if normalized_phone:
+            conditions.append(User.phone == normalized_phone)
+
         result = await self.db.execute(
-            select(User).options(selectinload(User.roles)).where(User.username == username.lower())
+            select(User).options(selectinload(User.roles)).where(or_(*conditions))
         )
         user = result.unique().scalar_one_or_none()
 
@@ -499,7 +512,9 @@ class AuthService:
         await self._log(str(user.id), AuthAction.REGISTER, request)
         await self.db.commit()
 
-        return await self._create_session(user, request)
+        result = await self._create_session(user, request)
+        result["username"] = login
+        return result
 
     def _verify_google_token(self, token: str) -> dict:
         try:

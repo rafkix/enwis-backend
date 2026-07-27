@@ -13,6 +13,12 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+    # Faqat register_verify javobida to'ldiriladi (login/refresh/social
+    # oqimlarida None qoladi) — chunki foydalanuvchi buni faqat SHU yerda,
+    # akkaunt birinchi marta yaratilganda bilib olishi mumkin. Avval hech
+    # qayerda ko'rsatilmagani uchun odamlar avtomatik generatsiya qilingan
+    # login'ini umuman bilmay qolib, keyinchalik kira olmay qolishardi.
+    username: str | None = None
 
 
 class RefreshRequest(BaseModel):
