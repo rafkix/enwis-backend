@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, init_db
-from app.core.middleware import RequestLoggerMiddleware
+from app.core.middleware import RequestLoggerMiddleware, SecurityHeadersMiddleware
 
 # ── Module imports ───────────────────────────────────────────────────
 from app.modules.auth import auth_router
@@ -92,7 +92,7 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/api/v1/docs" if settings.DEBUG else None,
     redoc_url="/api/v1/redoc" if settings.DEBUG else None,
-    description="Enwis is an AI-powered IELTS and CEFR preparation platform.",
+    description="Enwis is an AI-powered test platform.",
 )
 
 origins = list(
@@ -122,6 +122,7 @@ app.add_middleware(
 )
 app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
 app.add_middleware(RequestLoggerMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 class PublicStaticFiles(StaticFiles):
@@ -137,26 +138,13 @@ app.mount("/static", PublicStaticFiles(directory="static"), name="static")
 API_PREFIX = "/api/v1"
 
 for router in [
-    # ── User & Auth ──────────────────────────────────────────────────
     users_router,
     auth_router,
-    # ── Dashboard ────────────────────────────────────────────────────
     dashboard_router,
     public_router,
-    # ── Exams: DISABLED for now (exams.enwis.uz rebuild pending) ──────
-    # exams_router,
-    # apply_router,
-    # certificates_router,
-    # ── Tests: split by front-end ──────────────────────────────────────
-    # app.enwis.uz — authoring/management (create, edit, AI-generate,
-    # import/export, settings, publish)
     tests_management_router,
-    # test.enwis.uz — public discovery + practice-taking
-    # (Google/Telegram login only)
     tests_public_router,
-    # ── Notifications ────────────────────────────────────────────────
     notifications_router,
-    # ── Subscriptions ────────────────────────────────────────────────
     subscriptions_router,
 ]:
     app.include_router(router, prefix=API_PREFIX)
@@ -225,11 +213,6 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-
-    # This __main__ block is only ever used for local development
-    # (`python -m app.main`). Production should run uvicorn/gunicorn
-    # directly without --reload, so hardcoding reload=True here is safe
-    # and avoids depending on settings.DEBUG being read correctly.
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
