@@ -143,6 +143,20 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+class ForgotPasswordSendCodeRequest(BaseModel):
+    """app.enwis.uz uchun — parolni telefon orqali tiklash, 1-qadam."""
+
+    phone: str = Field(..., min_length=7, max_length=20)
+
+
+class ForgotPasswordResetRequest(BaseModel):
+    """2-qadam: SMS kod + yangi parol bir chaqiriqda tasdiqlanadi."""
+
+    phone: str = Field(..., min_length=7, max_length=20)
+    code: str = Field(..., min_length=4, max_length=8)
+    new_password: str = Field(..., min_length=8)
+
+
 class SessionResponse(BaseModel):
     id: UUID
     ip_address: str | None = None

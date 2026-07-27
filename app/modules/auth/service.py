@@ -3,7 +3,7 @@ import hmac
 import logging
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 from fastapi import HTTPException, Request
@@ -28,6 +28,7 @@ from app.modules.auth.models import (
     AuthProvider,
     PasswordResetToken,
     PhoneRegistrationTicket,
+    PhoneVerification,
     Role,
     Session,
     SocialAccount,
@@ -370,6 +371,120 @@ class AuthService:
         )
         await self.db.commit()
         return {"success": True, "message": "Password reset successfully"}
+
+    async def forgot_password_send_code(self, phone: str, request: Request) -> dict:
+        """app.enwis.uz — parolni tiklash, 1-qadam: telefon bo'yicha
+        akkaunt topilsa SMS kod yuboriladi. Javob har doim generic —
+        akkaunt mavjudligini oshkor qilmaslik uchun (email variantidagi
+        kabi), lekin real amalda faqat topilgan holatda SMS ketadi."""
+        phone = self._normalize_phone(phone)
+        generic = {
+            "success": True,
+            "message": "Agar bu raqam ro'yxatdan o'tgan bo'lsa, tasdiqlash kodi yuborildi",
+        }
+
+        result = await self.db.execute(select(User).where(User.phone == phone))
+        user = result.scalar_one_or_none()
+        if not user:
+            return generic
+
+        result = await self.db.execute(
+            select(PhoneVerification)
+            .where(
+                PhoneVerification.user_id == user.id,
+                PhoneVerification.phone == phone,
+                PhoneVerification.is_used.is_(False),
+            )
+            .order_by(PhoneVerification.created_at.desc())
+            .limit(1)
+        )
+        last = result.scalar_one_or_none()
+        if last:
+            diff = (self._now() - last.created_at).total_seconds()
+            if diff < self.RESEND_COOLDOWN:
+                # Generic javob bilan bir xilda qoladi — hech narsa oshkor
+                # qilinmaydi, lekin haqiqatda yangi kod yuborilmaydi.
+                return generic
+            last.is_used = True
+
+        code = generate_sms_code()
+        verification = PhoneVerification(
+            user_id=user.id,
+            phone=phone,
+            code_hash=self._hash(code),
+            expires_at=self._now() + timedelta(seconds=self.OTP_TTL_SECONDS),
+        )
+        self.db.add(verification)
+        await self.db.commit()
+
+        try:
+            await self._send_sms_code(phone, code)
+        except Exception as exc:
+            logger.error("Parolni tiklash SMS'i yuborilmadi (phone=%s): %s", phone, exc)
+            verification.is_used = True
+            await self.db.commit()
+            # Bu yerda ham javob generic bo'lib qoladi — chunki foydalanuvchi
+            # bormi-yo'qmi bilinmasligi kerak. Real yuborilmagan xatolik
+            # loglarda qoladi, operatsion jihatdan kuzatiladi.
+
+        return generic
+
+    async def forgot_password_reset(
+        self, phone: str, code: str, new_password: str, request: Request
+    ) -> dict:
+        """2-qadam: SMS kodni tasdiqlaydi va bir chaqiriqning o'zida yangi
+        parolni o'rnatadi (email oqimidagi kabi alohida token bosqichi
+        shart emas — kod o'zi shu vazifani bajaradi)."""
+        phone = self._normalize_phone(phone)
+
+        result = await self.db.execute(select(User).where(User.phone == phone))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(400, "Kod noto'g'ri yoki muddati o'tgan")
+
+        result = await self.db.execute(
+            select(PhoneVerification)
+            .where(
+                PhoneVerification.user_id == user.id,
+                PhoneVerification.phone == phone,
+                PhoneVerification.is_used.is_(False),
+            )
+            .order_by(PhoneVerification.created_at.desc())
+            .limit(1)
+        )
+        verification = result.scalar_one_or_none()
+        if not verification:
+            raise HTTPException(400, "Kod so'ralmagan. Avval kod yuborishni so'rang.")
+
+        expires_at = verification.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if self._now() > expires_at:
+            verification.is_used = True
+            await self.db.commit()
+            raise HTTPException(410, "Kod muddati o'tgan. Qaytadan so'rang.")
+
+        if verification.attempts >= self.MAX_ATTEMPTS:
+            verification.is_used = True
+            await self.db.commit()
+            raise HTTPException(429, "Juda ko'p urinish. Qaytadan kod so'rang.")
+
+        if not self._verify_hash(code, verification.code_hash):
+            verification.attempts += 1
+            await self.db.commit()
+            remaining = self.MAX_ATTEMPTS - verification.attempts
+            raise HTTPException(400, f"Kod noto'g'ri. {remaining} urinish qoldi.")
+
+        verification.is_used = True
+        user.password_hash = hash_password(new_password)
+        # Parol almashtirilgach barcha eski sessiyalar bekor qilinadi —
+        # xuddi email orqali reset qilingandagi kabi.
+        await self.db.execute(
+            update(Session).where(Session.user_id == user.id).values(is_revoked=True)
+        )
+        await self._log(str(user.id), AuthAction.PASSWORD_CHANGE, request)
+        await self.db.commit()
+        return {"success": True, "message": "Parol muvaffaqiyatli yangilandi"}
 
     async def _send_sms_code(self, phone: str, code: str) -> None:
         # FIX: exception endi yutilmaydi va chaqiruvchiga ko'tariladi.

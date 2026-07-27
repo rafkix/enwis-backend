@@ -9,6 +9,8 @@ from app.modules.auth.models import User
 from app.modules.auth.schemas import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
+    ForgotPasswordResetRequest,
+    ForgotPasswordSendCodeRequest,
     LinkedAccountResponse,
     LinkGoogleRequest,
     LinkTelegramRequest,
@@ -279,6 +281,49 @@ async def reset_password(
     _rl: None = Depends(forgot_password_limiter),
 ):
     return await service.reset_password(payload.token, payload.new_password)
+
+
+@router.post(
+    "/forgot-password/send-code",
+    response_model=MessageResponse,
+    summary="Request password reset via phone (app.enwis.uz) — step 1",
+    description=(
+        "app.enwis.uz uchun: telefon raqami bo'yicha akkaunt topilsa, "
+        "SMS orqali 6 xonali kod yuboriladi. Akkaunt mavjudligini oshkor "
+        "qilmaslik uchun javob har doim bir xil. `/auth/forgot-password/reset` "
+        "bilan davom eting."
+    ),
+    responses={200: {"description": "Generic success response."}, **_base},
+)
+async def forgot_password_send_code(
+    payload: ForgotPasswordSendCodeRequest,
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
+    _rl: None = Depends(sms_limiter),
+):
+    return await service.forgot_password_send_code(payload.phone, request)
+
+
+@router.post(
+    "/forgot-password/reset",
+    response_model=MessageResponse,
+    summary="Confirm SMS code and set new password (app.enwis.uz) — step 2",
+    responses={
+        200: {"description": "Password reset successfully."},
+        **_base,
+        410: {"description": "Code has expired."},
+        429: {"description": "Too many attempts."},
+    },
+)
+async def forgot_password_reset(
+    payload: ForgotPasswordResetRequest,
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
+    _rl: None = Depends(forgot_password_limiter),
+):
+    return await service.forgot_password_reset(
+        payload.phone, payload.code, payload.new_password, request
+    )
 
 
 # NOTE: "verify my own phone while logged in" now lives only at
