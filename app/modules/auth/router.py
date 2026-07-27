@@ -26,11 +26,7 @@ from app.modules.auth.schemas import (
 )
 from app.modules.auth.service import AuthService
 
-_400 = {
-    400: {
-        "description": "Bad request — invalid credentials or business rule violation."
-    }
-}
+_400 = {400: {"description": "Bad request — invalid credentials or business rule violation."}}
 _401 = {401: {"description": "Not authenticated — Bearer token missing or expired."}}
 _422 = {422: {"description": "Validation error — request body is malformed."}}
 
@@ -114,9 +110,7 @@ async def register_verify(
     responses={
         200: {"description": "Login successful. Tokens returned."},
         **_base,
-        401: {
-            "description": "Invalid credentials — identifier or password is incorrect."
-        },
+        401: {"description": "Invalid credentials — identifier or password is incorrect."},
     },
 )
 async def login(
