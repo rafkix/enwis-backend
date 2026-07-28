@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Enwis Backend"
 
     # =========================
+    # API DOCS (/api/v1/docs, /api/v1/redoc) — HTTP Basic Auth bilan
+    # himoyalangan, DEBUG holatidan qat'i nazar har doim shu login/parol
+    # bilan ochiladi. .env'da albatta o'zgartiring — standart qiymatlar
+    # faqat local ishlab chiqish uchun.
+    # =========================
+    DOCS_USERNAME: str = "enwis"
+    DOCS_PASSWORD: str = "rafkix@1234"
+
+    # =========================
     # DATABASE
     # =========================
     DATABASE_URL: str = "sqlite+aiosqlite:///./enwis.db"
@@ -152,6 +161,11 @@ class Settings(BaseSettings):
                 raise ValueError("Production uchun kuchli INTERNAL_API_TOKEN kiriting")
             if not self.COOKIE_SECURE:
                 raise ValueError("Production muhitida COOKIE_SECURE=true bo'lishi kerak")
+            if self.DOCS_PASSWORD == "change-me":
+                raise ValueError(
+                    "Production uchun DOCS_PASSWORD'ni .env'da o'zgartiring "
+                    "(/api/v1/docs shu bilan himoyalangan)"
+                )
         return self
 
     # =========================

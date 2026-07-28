@@ -1,11 +1,15 @@
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -88,12 +92,52 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Enwis Backend API",
-    version="1.0.0",
+    version="1.0.1",
     lifespan=lifespan,
-    docs_url="/api/v1/docs" if settings.DEBUG else None,
-    redoc_url="/api/v1/redoc" if settings.DEBUG else None,
-    description="Enwis is an AI-powered test platform.",
+    # Standart docs/redoc/openapi o'chirilgan — pastda o'rniga parol bilan
+    # himoyalangan versiyalari qo'shilgan (DEBUG holatidan qat'i nazar,
+    # har doim login/parol so'raladi, doim ochiq turmaydi).
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    description="Enwis is an AI-powered IELTS and CEFR preparation platform.",
 )
+
+_docs_security = HTTPBasic()
+
+
+def _verify_docs_auth(credentials: HTTPBasicCredentials = Depends(_docs_security)) -> str:
+    """API docs uchun HTTP Basic Auth. secrets.compare_digest — timing
+    attack'lardan himoya qiladi (oddiy == solishtirish emas)."""
+    valid_username = secrets.compare_digest(credentials.username, settings.DOCS_USERNAME)
+    valid_password = secrets.compare_digest(credentials.password, settings.DOCS_PASSWORD)
+    if not (valid_username and valid_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+@app.get("/api/v1/openapi.json", include_in_schema=False)
+async def get_openapi_schema(_: str = Depends(_verify_docs_auth)):
+    return get_openapi(title=app.title, version=app.version, routes=app.routes)
+
+
+@app.get("/api/v1/docs", include_in_schema=False)
+async def get_docs(_: str = Depends(_verify_docs_auth)):
+    return get_swagger_ui_html(
+        openapi_url="/api/v1/openapi.json", title=f"{app.title} — Docs"
+    )
+
+
+@app.get("/api/v1/redoc", include_in_schema=False)
+async def get_redoc(_: str = Depends(_verify_docs_auth)):
+    return get_redoc_html(
+        openapi_url="/api/v1/openapi.json", title=f"{app.title} — ReDoc"
+    )
+
 
 origins = list(
     set(
@@ -138,13 +182,26 @@ app.mount("/static", PublicStaticFiles(directory="static"), name="static")
 API_PREFIX = "/api/v1"
 
 for router in [
+    # ── User & Auth ──────────────────────────────────────────────────
     users_router,
     auth_router,
+    # ── Dashboard ────────────────────────────────────────────────────
     dashboard_router,
     public_router,
+    # ── Exams: DISABLED for now (exams.enwis.uz rebuild pending) ──────
+    # exams_router,
+    # apply_router,
+    # certificates_router,
+    # ── Tests: split by front-end ──────────────────────────────────────
+    # app.enwis.uz — authoring/management (create, edit, AI-generate,
+    # import/export, settings, publish)
     tests_management_router,
+    # test.enwis.uz — public discovery + practice-taking
+    # (Google/Telegram login only)
     tests_public_router,
+    # ── Notifications ────────────────────────────────────────────────
     notifications_router,
+    # ── Subscriptions ────────────────────────────────────────────────
     subscriptions_router,
 ]:
     app.include_router(router, prefix=API_PREFIX)
@@ -189,7 +246,7 @@ async def root():
     return {
         "success": True,
         "message": "Enwis Backend API is running",
-        "version": "1.0.0",
+        "version": "1.0.1",
     }
 
 
@@ -213,6 +270,11 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+
+    # This __main__ block is only ever used for local development
+    # (`python -m app.main`). Production should run uvicorn/gunicorn
+    # directly without --reload, so hardcoding reload=True here is safe
+    # and avoids depending on settings.DEBUG being read correctly.
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
