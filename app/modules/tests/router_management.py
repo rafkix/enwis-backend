@@ -160,6 +160,20 @@ async def delete_test(
     await service.delete_test(uuid.UUID(test_id), user.id)
 
 
+@router.post("/{test_id}/cover", response_model=TestResponse)
+async def upload_test_cover(
+    test_id: str,
+    cover: UploadFile = File(..., description="Test muqovasi (jpeg/png/webp, 5MB gacha)"),
+    user: User = Depends(get_active_user),
+    service: TestService = Depends(get_test_service),
+):
+    """Test muqovasini rasm fayl sifatida yuklaydi. Tayyor URL o'rnatish
+    uchun hamon oddiy PATCH /{test_id} { "cover_image": "https://..." }
+    ishlatilaveradi — bu shunchaki fayl-yuklash muqobili."""
+    test = await service.upload_test_cover(uuid.UUID(test_id), user.id, cover)
+    return test_to_response(test)
+
+
 # ── Test lifecycle ────────────────────────────────────────────────────
 
 

@@ -1,7 +1,8 @@
+import os
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,6 +18,11 @@ from app.modules.auth.models import User
 from app.modules.exams.ai import build_ai_prompt, call_ai_api
 from app.modules.questions.models import Choice
 from app.modules.questions.models import Question as QBQuestion
+from app.modules.tests.constants import (
+    ALLOWED_COVER_MIMES,
+    COVER_UPLOAD_DIR,
+    MAX_COVER_SIZE,
+)
 from app.modules.tests.models import (
     Test,
     TestQuestion,
@@ -82,9 +88,7 @@ class TestService:
         return datetime.now(UTC)
 
     async def _get_user_tier(self, user_id: uuid.UUID) -> PlanTier:
-        result = await self.db.execute(
-            select(User.subscription_tier).where(User.id == user_id)
-        )
+        result = await self.db.execute(select(User.subscription_tier).where(User.id == user_id))
         tier_str = result.scalar_one_or_none()
         return get_user_plan_tier(tier_str)
 
@@ -144,14 +148,52 @@ class TestService:
 
         return test
 
-    async def update_test(
-        self, test_id: uuid.UUID, data: dict, owner_id: uuid.UUID
-    ) -> Test:
+    async def update_test(self, test_id: uuid.UUID, data: dict, owner_id: uuid.UUID) -> Test:
         test = await self.get_test(test_id, owner_id)
 
         for key, value in data.items():
             if value is not None and hasattr(test, key):
                 setattr(test, key, value)
+        await self.db.flush()
+        await self.db.refresh(test)
+        await self.db.commit()
+        return test
+
+    async def upload_test_cover(
+        self, test_id: uuid.UUID, owner_id: uuid.UUID, cover: UploadFile
+    ) -> Test:
+        """Test muqovasi uchun rasm fayl sifatida yuklanadi (avatar
+        yuklashdagi bilan bir xil naqsh) — oldin faqat tayyor URL
+        (`cover_image`) qabul qilinardi, endi to'g'ridan-to'g'ri fayl ham
+        yuklash mumkin."""
+        test = await self.get_test(test_id, owner_id)
+
+        if cover.content_type not in ALLOWED_COVER_MIMES:
+            raise HTTPException(400, "File type not allowed. Accepted: jpeg, png, webp")
+
+        content = await cover.read()
+        if len(content) > MAX_COVER_SIZE:
+            raise HTTPException(400, "File size must not exceed 5MB")
+
+        ext = (cover.filename or "image").rsplit(".", 1)[-1].lower()
+        if ext not in {"jpg", "jpeg", "png", "webp"}:
+            ext = "jpg"
+
+        filename = f"{uuid.uuid4()}.{ext}"
+        os.makedirs(COVER_UPLOAD_DIR, exist_ok=True)
+        file_path = os.path.join(COVER_UPLOAD_DIR, filename)
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        if test.cover_image and test.cover_image.startswith("/static/test_covers/"):
+            old_path = test.cover_image.lstrip("/")
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+
+        test.cover_image = f"/static/test_covers/{filename}"
         await self.db.flush()
         await self.db.refresh(test)
         await self.db.commit()
@@ -235,7 +277,11 @@ class TestService:
         sort: str = "newest",
     ) -> dict:
         return await self.repo.list_public(
-            page=page, per_page=per_page, search=search, category=category, sort=sort,
+            page=page,
+            per_page=per_page,
+            search=search,
+            category=category,
+            sort=sort,
         )
 
     async def get_public_test(self, id_or_slug: str) -> Test:
@@ -278,9 +324,7 @@ class TestService:
         await self.favorite_repo.remove(test_id, user_id)
         await self.db.commit()
 
-    async def list_favorites(
-        self, user_id: uuid.UUID, page: int = 1, per_page: int = 20
-    ) -> dict:
+    async def list_favorites(self, user_id: uuid.UUID, page: int = 1, per_page: int = 20) -> dict:
         tests, total = await self.favorite_repo.list_for_user(user_id, page, per_page)
         return {
             "items": tests,
@@ -293,13 +337,19 @@ class TestService:
     # ── Import previews (parse without persisting) ──────────────────────
 
     async def preview_import_json(
-        self, test_id: uuid.UUID, questions_data: list[dict], owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        questions_data: list[dict],
+        owner_id: uuid.UUID,
     ) -> dict:
         await self.get_test(test_id, owner_id)
         return {"items": questions_data, "count": len(questions_data), "errors": []}
 
     async def preview_import_excel(
-        self, test_id: uuid.UUID, file_bytes: bytes, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        file_bytes: bytes,
+        owner_id: uuid.UUID,
     ) -> dict:
         from app.modules.questions.import_utils import parse_excel
 
@@ -308,7 +358,10 @@ class TestService:
         return {"items": questions_data, "count": len(questions_data), "errors": errors}
 
     async def preview_import_csv(
-        self, test_id: uuid.UUID, file_bytes: bytes, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        file_bytes: bytes,
+        owner_id: uuid.UUID,
     ) -> dict:
         from app.modules.questions.import_utils import parse_csv
 
@@ -355,12 +408,8 @@ class TestService:
         original_settings = original.settings
         settings = TestSettings(
             test_id=new_test.id,
-            negative_marking=(
-                original_settings.negative_marking if original_settings else False
-            ),
-            auto_submit=(
-                original_settings.auto_submit if original_settings else True
-            ),
+            negative_marking=(original_settings.negative_marking if original_settings else False),
+            auto_submit=(original_settings.auto_submit if original_settings else True),
             result_visibility=(
                 original_settings.result_visibility if original_settings else "immediate"
             ),
@@ -378,9 +427,13 @@ class TestService:
     # ── Questions (Bank) ─────────────────────────────────────────────
 
     async def add_question(
-        self, test_id: uuid.UUID, question_id: uuid.UUID,
-        owner_id: uuid.UUID, order: int | None = None,
-        points: int = 1, required: bool = True,
+        self,
+        test_id: uuid.UUID,
+        question_id: uuid.UUID,
+        owner_id: uuid.UUID,
+        order: int | None = None,
+        points: int = 1,
+        required: bool = True,
     ) -> TestQuestion:
         test = await self.get_test(test_id, owner_id)
         if test.status == "active":
@@ -391,7 +444,8 @@ class TestService:
         self, tq_id: uuid.UUID, data: dict, owner_id: uuid.UUID
     ) -> TestQuestion:
         result = await self.db.execute(
-            select(TestQuestion).options(selectinload(TestQuestion.test))
+            select(TestQuestion)
+            .options(selectinload(TestQuestion.test))
             .where(TestQuestion.id == tq_id)
         )
         tq = result.scalar_one_or_none()
@@ -412,7 +466,9 @@ class TestService:
         await self.tq_repo.remove_question(test_id, tq_id)
 
     async def add_bank_questions(
-        self, test_id: uuid.UUID, question_ids: list[uuid.UUID],
+        self,
+        test_id: uuid.UUID,
+        question_ids: list[uuid.UUID],
         owner_id: uuid.UUID,
     ) -> list[TestQuestion]:
         test = await self.get_test(test_id, owner_id)
@@ -452,7 +508,10 @@ class TestService:
         return [by_id[tq.question_id] for tq in tqs if tq.question_id in by_id]
 
     async def create_question_in_test(
-        self, test_id: uuid.UUID, data: dict, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        data: dict,
+        owner_id: uuid.UUID,
     ) -> QBQuestion:
         from app.modules.tests.question_service import QuestionService
 
@@ -462,14 +521,19 @@ class TestService:
 
         question = await QuestionService(self.db).create_question(data, owner_id)
         await self.tq_repo.add_question(
-            test_id, question.id, points=data.get("score", 1),
+            test_id,
+            question.id,
+            points=data.get("score", 1),
         )
         await self.db.commit()
         await self.db.refresh(question)
         return question
 
     async def update_question_in_test(
-        self, test_id: uuid.UUID, question_id: uuid.UUID, data: dict,
+        self,
+        test_id: uuid.UUID,
+        question_id: uuid.UUID,
+        data: dict,
         owner_id: uuid.UUID,
     ) -> QBQuestion:
         from app.modules.tests.question_service import QuestionService
@@ -483,7 +547,9 @@ class TestService:
             raise TestQuestionNotFoundException()
 
         question = await QuestionService(self.db).update_question(
-            question_id, data, owner_id,
+            question_id,
+            data,
+            owner_id,
         )
         if "score" in data and data["score"] is not None:
             await self.tq_repo.update_question(link.id, {"points": data["score"]})
@@ -491,7 +557,10 @@ class TestService:
         return question
 
     async def delete_question_from_test(
-        self, test_id: uuid.UUID, question_id: uuid.UUID, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        question_id: uuid.UUID,
+        owner_id: uuid.UUID,
     ) -> None:
         from app.modules.tests.question_service import QuestionService
 
@@ -515,7 +584,10 @@ class TestService:
     # ── Import ────────────────────────────────────────────────────────
 
     async def import_questions_json(
-        self, test_id: uuid.UUID, questions_data: list[dict], owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        questions_data: list[dict],
+        owner_id: uuid.UUID,
     ) -> list[QBQuestion]:
         from app.modules.tests.question_service import QuestionService
 
@@ -524,17 +596,23 @@ class TestService:
             raise TestNotEditableException()
 
         questions = await QuestionService(self.db).bulk_create_questions(
-            questions_data, owner_id,
+            questions_data,
+            owner_id,
         )
         for q, data in zip(questions, questions_data, strict=False):
             await self.tq_repo.add_question(
-                test_id, q.id, points=data.get("score", 1),
+                test_id,
+                q.id,
+                points=data.get("score", 1),
             )
         await self.db.commit()
         return questions
 
     async def import_questions_excel(
-        self, test_id: uuid.UUID, file_bytes: bytes, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        file_bytes: bytes,
+        owner_id: uuid.UUID,
     ) -> dict:
         from app.modules.questions.import_utils import parse_excel
 
@@ -543,7 +621,10 @@ class TestService:
         return {"created": len(created), "errors": errors}
 
     async def import_questions_csv(
-        self, test_id: uuid.UUID, file_bytes: bytes, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        file_bytes: bytes,
+        owner_id: uuid.UUID,
     ) -> dict:
         from app.modules.questions.import_utils import parse_csv
 
@@ -554,7 +635,9 @@ class TestService:
     # ── Export ────────────────────────────────────────────────────────
 
     async def export_questions_json(
-        self, test_id: uuid.UUID, owner_id: uuid.UUID,
+        self,
+        test_id: uuid.UUID,
+        owner_id: uuid.UUID,
     ) -> list[dict]:
         questions = await self.list_questions_full(test_id, owner_id)
         return [
@@ -565,10 +648,7 @@ class TestService:
                 "score": q.score,
                 "explanation": q.explanation,
                 "correct_answer": q.correct_answer,
-                "choices": [
-                    {"content": c.content, "is_correct": c.is_correct}
-                    for c in q.choices
-                ],
+                "choices": [{"content": c.content, "is_correct": c.is_correct} for c in q.choices],
             }
             for q in questions
         ]
@@ -640,9 +720,7 @@ class TestService:
                     "title": q.title,
                     "question_type": q.question_type,
                     "score": q.score,
-                    "choices": [
-                        {"id": c.id, "content": c.content} for c in q.choices
-                    ],
+                    "choices": [{"id": c.id, "content": c.content} for c in q.choices],
                 }
                 for q in questions
             ],
@@ -661,9 +739,7 @@ class TestService:
         tqs = await self.tq_repo.list_by_test(test_id)
         questions_count = len(tqs)
 
-        exam_ids_result = await self.db.execute(
-            select(Exam.id).where(Exam.test_id == test_id)
-        )
+        exam_ids_result = await self.db.execute(select(Exam.id).where(Exam.test_id == test_id))
         exam_ids = [row[0] for row in exam_ids_result.all()]
 
         attempts_count = 0
@@ -765,7 +841,8 @@ class TestService:
             await self.db.flush()
 
             tq = await self.tq_repo.add_question(
-                test_id, qb_question.id,
+                test_id,
+                qb_question.id,
                 points=data.get("points", 1),
             )
             created.append(tq)

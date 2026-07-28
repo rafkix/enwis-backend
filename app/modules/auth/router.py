@@ -8,7 +8,6 @@ from app.modules.auth.dependencies import get_current_user
 from app.modules.auth.models import User
 from app.modules.auth.schemas import (
     ChangePasswordRequest,
-    ForgotPasswordRequest,
     ForgotPasswordResetRequest,
     ForgotPasswordSendCodeRequest,
     LinkedAccountResponse,
@@ -20,7 +19,6 @@ from app.modules.auth.schemas import (
     RefreshRequest,
     RegisterSendCodeRequest,
     RegisterVerifyRequest,
-    ResetPasswordRequest,
     SetPasswordRequest,
     SocialLoginRequest,
     TelegramWebAppAuthRequest,
@@ -180,6 +178,9 @@ async def logout(
     response: Response,
     service: AuthService = Depends(get_auth_service),
 ):
+    # Brauzerga shu origin uchun cookie/storage'ni tozalashni buyuradi —
+    # skanerda "Clear-Site-Data not configured" deb chiqqan topilma.
+    response.headers["Clear-Site-Data"] = '"cookies", "storage"'
     refresh_token = payload.refresh_token or request.cookies.get("refresh_token")
     if not refresh_token:
         clear_auth_cookies(response)
@@ -203,6 +204,7 @@ async def logout_all(
     user: User = Depends(get_current_user),
     service: AuthService = Depends(get_auth_service),
 ):
+    response.headers["Clear-Site-Data"] = '"cookies", "storage"'
     result = await service.logout_all(user)
     clear_auth_cookies(response)
     return result
@@ -248,39 +250,39 @@ async def change_password(
     )
 
 
-@router.post(
-    "/forgot-password",
-    response_model=MessageResponse,
-    summary="Request password reset",
-    responses={
-        200: {"description": "Reset email sent if the address is registered."},
-        **_base,
-    },
-)
-async def forgot_password(
-    payload: ForgotPasswordRequest,
-    service: AuthService = Depends(get_auth_service),
-    _rl: None = Depends(forgot_password_limiter),
-):
-    return await service.forgot_password(str(payload.email))
+# @router.post(
+#     "/forgot-password",
+#     response_model=MessageResponse,
+#     summary="Request password reset",
+#     responses={
+#         200: {"description": "Reset email sent if the address is registered."},
+#         **_base,
+#     },
+# )
+# async def forgot_password(
+#     payload: ForgotPasswordRequest,
+#     service: AuthService = Depends(get_auth_service),
+#     _rl: None = Depends(forgot_password_limiter),
+# ):
+#     return await service.forgot_password(str(payload.email))
 
 
-@router.post(
-    "/reset-password",
-    response_model=MessageResponse,
-    summary="Reset password via token",
-    responses={
-        200: {"description": "Password reset successfully."},
-        **_base,
-        401: {"description": "Reset token is invalid or has expired."},
-    },
-)
-async def reset_password(
-    payload: ResetPasswordRequest,
-    service: AuthService = Depends(get_auth_service),
-    _rl: None = Depends(forgot_password_limiter),
-):
-    return await service.reset_password(payload.token, payload.new_password)
+# @router.post(
+#     "/reset-password",
+#     response_model=MessageResponse,
+#     summary="Reset password via token",
+#     responses={
+#         200: {"description": "Password reset successfully."},
+#         **_base,
+#         401: {"description": "Reset token is invalid or has expired."},
+#     },
+# )
+# async def reset_password(
+#     payload: ResetPasswordRequest,
+#     service: AuthService = Depends(get_auth_service),
+#     _rl: None = Depends(forgot_password_limiter),
+# ):
+#     return await service.reset_password(payload.token, payload.new_password)
 
 
 @router.post(
@@ -324,23 +326,6 @@ async def forgot_password_reset(
     return await service.forgot_password_reset(
         payload.phone, payload.code, payload.new_password, request
     )
-
-
-# NOTE: "verify my own phone while logged in" now lives only at
-# /users/me/phone/request + /users/me/phone/verify (that version also
-# checks the number isn't already used by another account, so it fully
-# replaces this — removed duplicate /auth/phone/send-code + /phone/verify).
-
-
-# NOTE: phone-based registration now lives only at
-# /auth/register/send-code + /auth/register/verify above (removed the
-# older, parallel /auth/phone/register* pair — same feature, one path).
-#
-# NOTE: login-by-OTP (/auth/phone/login/send-code + /verify) has been
-# removed entirely. app.enwis.uz always logs in with login + password
-# (see /auth/login above); test.enwis.uz and exams.enwis.uz use Google
-# or Telegram only (see /auth/google, /auth/telegram below) — a phone
-# OTP login for app.enwis.uz was a redundant third way in.
 
 
 @router.post(
