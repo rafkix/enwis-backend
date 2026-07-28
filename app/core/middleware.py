@@ -44,7 +44,7 @@ class SecurityHeadersMiddleware:
     relaxed only on those two paths — everything else stays locked down.
     """
 
-    _DOCS_PATHS = {"/api/v1/docs", "/api/v1/redoc"}
+    _DOCS_PATHS = {"/api/v1/docs", "/api/v1/redoc", "/api/v1/docs/login"}
 
     _LOCKED_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     _DOCS_CSP = (
@@ -68,7 +68,9 @@ class SecurityHeadersMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                headers = message.setdefault("headers", [])
+                # Uvicorn adds "server: uvicorn" by default — drop it so the
+                # response doesn't advertise the server software/version.
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"server"]
                 headers.extend(
                     [
                         (b"content-security-policy", csp.encode()),
@@ -85,6 +87,7 @@ class SecurityHeadersMiddleware:
                         ),
                     ]
                 )
+                message["headers"] = headers
             await send(message)
 
         await self.app(scope, receive, send_wrapper)

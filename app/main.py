@@ -4,12 +4,11 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -103,37 +102,112 @@ app = FastAPI(
     description="Enwis is an AI-powered IELTS and CEFR preparation platform.",
 )
 
-_docs_security = HTTPBasic()
+_docs_session_key = "docs_auth"
+
+_DOCS_LOGIN_PAGE = """<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>API Docs — Kirish</title>
+<style>
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center;
+    justify-content: center; background: #0f172a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }}
+  form {{
+    background: #fff; padding: 32px; border-radius: 16px; width: 320px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  }}
+  h1 {{ font-size: 18px; margin: 0 0 20px; color: #0f172a; }}
+  label {{ display: block; font-size: 13px; color: #475569; margin: 12px 0 4px; }}
+  input {{
+    width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 14px;
+    border: 1px solid #e2e8f0; border-radius: 8px; outline: none;
+  }}
+  input:focus {{ border-color: #0f172a; }}
+  button {{
+    width: 100%; margin-top: 20px; padding: 10px; font-size: 14px;
+    font-weight: 600; color: #fff; background: #0f172a; border: none;
+    border-radius: 8px; cursor: pointer;
+  }}
+  button:hover {{ background: #1e293b; }}
+  .err {{ color: #dc2626; font-size: 13px; margin: 0 0 8px; }}
+</style>
+</head>
+<body>
+  <form method="post" action="/api/v1/docs/login">
+    <h1>API hujjatlariga kirish</h1>
+    {error_html}
+    <input type="hidden" name="next" value="{next}" />
+    <label>Login</label>
+    <input type="text" name="username" autocomplete="username" required autofocus />
+    <label>Parol</label>
+    <input type="password" name="password" autocomplete="current-password" required />
+    <button type="submit">Kirish</button>
+  </form>
+</body>
+</html>"""
 
 
-def _verify_docs_auth(credentials: HTTPBasicCredentials = Depends(_docs_security)) -> str:
-    """API docs uchun HTTP Basic Auth. secrets.compare_digest — timing
-    attack'lardan himoya qiladi (oddiy == solishtirish emas)."""
-    valid_username = secrets.compare_digest(credentials.username, settings.DOCS_USERNAME)
-    valid_password = secrets.compare_digest(credentials.password, settings.DOCS_PASSWORD)
+def _docs_authed(request: Request) -> bool:
+    return bool(request.session.get(_docs_session_key))
+
+
+@app.get("/api/v1/docs/login", include_in_schema=False)
+async def docs_login_form(next: str = "/api/v1/docs", error: int = 0):
+    error_html = (
+        '<p class="err">Login yoki parol noto\'g\'ri</p>' if error else ""
+    )
+    return HTMLResponse(_DOCS_LOGIN_PAGE.format(next=next, error_html=error_html))
+
+
+@app.post("/api/v1/docs/login", include_in_schema=False)
+async def docs_login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/api/v1/docs"),
+):
+    """secrets.compare_digest — timing attack'lardan himoya qiladi (oddiy
+    == solishtirish emas)."""
+    valid_username = secrets.compare_digest(username, settings.DOCS_USERNAME)
+    valid_password = secrets.compare_digest(password, settings.DOCS_PASSWORD)
     if not (valid_username and valid_password):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
+        return RedirectResponse(
+            url=f"/api/v1/docs/login?next={next}&error=1", status_code=303
         )
-    return credentials.username
+    request.session[_docs_session_key] = True
+    return RedirectResponse(url=next, status_code=303)
+
+
+@app.get("/api/v1/docs/logout", include_in_schema=False)
+async def docs_logout(request: Request):
+    request.session.pop(_docs_session_key, None)
+    return RedirectResponse(url="/api/v1/docs/login")
 
 
 @app.get("/api/v1/openapi.json", include_in_schema=False)
-async def get_openapi_schema(_: str = Depends(_verify_docs_auth)):
+async def get_openapi_schema(request: Request):
+    if not _docs_authed(request):
+        return RedirectResponse(url="/api/v1/docs/login?next=/api/v1/openapi.json")
     return get_openapi(title=app.title, version=app.version, routes=app.routes)
 
 
 @app.get("/api/v1/docs", include_in_schema=False)
-async def get_docs(_: str = Depends(_verify_docs_auth)):
+async def get_docs(request: Request):
+    if not _docs_authed(request):
+        return RedirectResponse(url="/api/v1/docs/login?next=/api/v1/docs")
     return get_swagger_ui_html(
         openapi_url="/api/v1/openapi.json", title=f"{app.title} — Docs"
     )
 
 
 @app.get("/api/v1/redoc", include_in_schema=False)
-async def get_redoc(_: str = Depends(_verify_docs_auth)):
+async def get_redoc(request: Request):
+    if not _docs_authed(request):
+        return RedirectResponse(url="/api/v1/docs/login?next=/api/v1/redoc")
     return get_redoc_html(
         openapi_url="/api/v1/openapi.json", title=f"{app.title} — ReDoc"
     )
