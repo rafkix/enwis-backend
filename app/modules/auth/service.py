@@ -20,7 +20,6 @@ from app.core.exceptions import (
     InvalidCredentialsException,
     NotFoundException,
 )
-from app.core.plans import PlanTier, get_plan_features
 from app.core.security import create_access_token, hash_password, verify_password
 from app.modules.auth.models import (
     AuthAction,

@@ -22,7 +22,6 @@ from app.modules.ai.exceptions import (
     AITimeoutError,
 )
 from app.modules.ai.providers.base import AIProvider
-from app.modules.ai.providers.gemini import GeminiProvider
 from app.modules.ai.providers.groq import GroqProvider
 from app.modules.ai.providers.openrouter import OpenRouterProvider
 from app.modules.ai.schemas import (

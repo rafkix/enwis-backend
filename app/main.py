@@ -4,12 +4,11 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -20,10 +19,10 @@ from app.core.database import AsyncSessionLocal, init_db
 from app.core.middleware import RequestLoggerMiddleware, SecurityHeadersMiddleware
 
 # ── Versioned API aggregators ────────────────────────────────────────
-# Har bir URL-versiya generatsiyasi bitta aggregate routerga ega
-# (app/api/v1/__init__.py, app/api/v2/__init__.py) — /api/v3 qo'shilganda
-# bu fayl routing logikasi bo'yicha o'zgarmaydi, faqat yangi paket
-# qo'shilib pastda mount qilinadi.
+# See app/api/v1/__init__.py and app/api/v2/__init__.py: each URL-routing
+# generation owns exactly one aggregate router, so adding /api/v2 later
+# never means touching this file's routing logic again — only adding a
+# new app/api/vN package and mounting it below.
 from app.api.v1 import v1_router
 from app.api.v2 import v2_router
 from app.modules.auth.models import Role
@@ -55,21 +54,7 @@ PAYMENT_SWEEP_INTERVAL_SECONDS = 15 * 60  # every 15 minutes
 async def _payment_expiry_sweep_loop() -> None:
     """Periodically expires PENDING payments whose receipt-upload
     deadline passed, and WAITING_FOR_REVIEW payments an admin never
-    reviewed in time (see subscriptions/constants.py timeouts).
-
-    ⚠️ MULTI-WORKER / MULTI-INSTANCE RISK: this loop runs inside
-    `lifespan`, so EVERY uvicorn worker / container replica starts its
-    own copy. If you ever run more than one process
-    (`--workers > 1`, or >1 replica behind a load balancer), multiple
-    processes will race to sweep the same rows concurrently.
-    Before scaling horizontally, verify that
-    `BillingService.sweep_expired_payments()` claims rows atomically
-    (e.g. a single `UPDATE ... WHERE status = 'PENDING' AND
-    expires_at < now() RETURNING id`, or `SELECT ... FOR UPDATE SKIP
-    LOCKED`) so two workers can't both "expire" (and notify about) the
-    same payment. If it currently does read-then-write in Python, that
-    is NOT safe under concurrent workers.
-    """
+    reviewed in time (see subscriptions/constants.py timeouts)."""
     while True:
         try:
             await asyncio.sleep(PAYMENT_SWEEP_INTERVAL_SECONDS)
@@ -107,46 +92,132 @@ app = FastAPI(
     title="Enwis Backend API",
     version=settings.APP_VERSION,
     lifespan=lifespan,
-    # Standart docs/redoc/openapi o'chirilgan — pastda o'rniga HTTP Basic
-    # bilan himoyalangan versiyalari qo'shilgan (DEBUG holatidan qat'i
-    # nazar, har doim login/parol so'raladi, doim ochiq turmaydi).
+    # Standart docs/redoc/openapi o'chirilgan — pastda o'rniga parol bilan
+    # himoyalangan versiyalari qo'shilgan (DEBUG holatidan qat'i nazar,
+    # har doim login/parol so'raladi, doim ochiq turmaydi).
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
     description="Enwis is an AI-powered test creation, delivery, and assessment platform.",
 )
 
-_docs_security = HTTPBasic()
+_docs_session_key = "docs_auth"
+
+_DOCS_LOGIN_PAGE = """<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>API Docs — Kirish</title>
+<style>
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center;
+    justify-content: center; background: #0f172a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }}
+  form {{
+    background: #fff; padding: 32px; border-radius: 16px; width: 320px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  }}
+  h1 {{ font-size: 18px; margin: 0 0 20px; color: #0f172a; }}
+  label {{ display: block; font-size: 13px; color: #475569; margin: 12px 0 4px; }}
+  input {{
+    width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 14px;
+    border: 1px solid #e2e8f0; border-radius: 8px; outline: none;
+  }}
+  input:focus {{ border-color: #0f172a; }}
+  button {{
+    width: 100%; margin-top: 20px; padding: 10px; font-size: 14px;
+    font-weight: 600; color: #fff; background: #0f172a; border: none;
+    border-radius: 8px; cursor: pointer;
+  }}
+  button:hover {{ background: #1e293b; }}
+  .err {{ color: #dc2626; font-size: 13px; margin: 0 0 8px; }}
+</style>
+</head>
+<body>
+  <form method="post" action="{prefix}/docs/login">
+    <h1>API hujjatlariga kirish</h1>
+    {error_html}
+    <input type="hidden" name="next" value="{next}" />
+    <label>Login</label>
+    <input type="text" name="username" autocomplete="username" required autofocus />
+    <label>Parol</label>
+    <input type="password" name="password" autocomplete="current-password" required />
+    <button type="submit">Kirish</button>
+  </form>
+</body>
+</html>"""
 
 
-def _verify_docs_auth(credentials: HTTPBasicCredentials = Depends(_docs_security)) -> str:
-    """API docs uchun HTTP Basic Auth. secrets.compare_digest — timing
-    attack'lardan himoya qiladi (oddiy == solishtirish emas)."""
-    valid_username = secrets.compare_digest(credentials.username, settings.DOCS_USERNAME)
-    valid_password = secrets.compare_digest(credentials.password, settings.DOCS_PASSWORD)
-    if not (valid_username and valid_password):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
+def _docs_authed(request: Request) -> bool:
+    return bool(request.session.get(_docs_session_key))
+
+
+@app.get(f"{settings.API_PREFIX}/docs/login", include_in_schema=False)
+async def docs_login_form(next: str = f"{settings.API_PREFIX}/docs", error: int = 0):
+    error_html = (
+        '<p class="err">Login yoki parol noto\'g\'ri</p>' if error else ""
+    )
+    return HTMLResponse(
+        _DOCS_LOGIN_PAGE.format(
+            prefix=settings.API_PREFIX, next=next, error_html=error_html
         )
-    return credentials.username
+    )
+
+
+@app.post(f"{settings.API_PREFIX}/docs/login", include_in_schema=False)
+async def docs_login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form(f"{settings.API_PREFIX}/docs"),
+):
+    """secrets.compare_digest — timing attack'lardan himoya qiladi (oddiy
+    == solishtirish emas)."""
+    valid_username = secrets.compare_digest(username, settings.DOCS_USERNAME)
+    valid_password = secrets.compare_digest(password, settings.DOCS_PASSWORD)
+    if not (valid_username and valid_password):
+        return RedirectResponse(
+            url=f"{settings.API_PREFIX}/docs/login?next={next}&error=1",
+            status_code=303,
+        )
+    request.session[_docs_session_key] = True
+    return RedirectResponse(url=next, status_code=303)
+
+
+@app.get(f"{settings.API_PREFIX}/docs/logout", include_in_schema=False)
+async def docs_logout(request: Request):
+    request.session.pop(_docs_session_key, None)
+    return RedirectResponse(url=f"{settings.API_PREFIX}/docs/login")
 
 
 @app.get(f"{settings.API_PREFIX}/openapi.json", include_in_schema=False)
-async def get_openapi_schema(_: str = Depends(_verify_docs_auth)):
+async def get_openapi_schema(request: Request):
+    if not _docs_authed(request):
+        return RedirectResponse(
+            url=f"{settings.API_PREFIX}/docs/login?next={settings.API_PREFIX}/openapi.json"
+        )
     return get_openapi(title=app.title, version=app.version, routes=app.routes)
 
 
 @app.get(f"{settings.API_PREFIX}/docs", include_in_schema=False)
-async def get_docs(_: str = Depends(_verify_docs_auth)):
+async def get_docs(request: Request):
+    if not _docs_authed(request):
+        return RedirectResponse(
+            url=f"{settings.API_PREFIX}/docs/login?next={settings.API_PREFIX}/docs"
+        )
     return get_swagger_ui_html(
         openapi_url=f"{settings.API_PREFIX}/openapi.json", title=f"{app.title} — Docs"
     )
 
 
 @app.get(f"{settings.API_PREFIX}/redoc", include_in_schema=False)
-async def get_redoc(_: str = Depends(_verify_docs_auth)):
+async def get_redoc(request: Request):
+    if not _docs_authed(request):
+        return RedirectResponse(
+            url=f"{settings.API_PREFIX}/docs/login?next={settings.API_PREFIX}/redoc"
+        )
     return get_redoc_html(
         openapi_url=f"{settings.API_PREFIX}/openapi.json", title=f"{app.title} — ReDoc"
     )
@@ -177,11 +248,6 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
-# NOTE: SessionMiddleware is kept even though docs auth no longer uses
-# `request.session` (HTTPBasic replaced the old login-page flow). Only
-# remove this if you confirm no other module (e.g. OAuth callback
-# flows in app.modules.auth) still reads/writes request.session —
-# grep for `request.session` across app/ before deleting.
 app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
 app.add_middleware(RequestLoggerMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
@@ -203,12 +269,6 @@ app.mount("/static", PublicStaticFiles(directory="static"), name="static")
 # /api/v2 is mounted too (see app/api/v2) so the URL space is reserved
 # and the pattern is proven end-to-end, but it has no real endpoints
 # yet — see that module's docstring for how to add them.
-#
-# TODO(tech debt): v1 uses settings.API_PREFIX (configurable via env),
-# v2 is hardcoded to "/api/v2". If you ever need to change the API
-# prefix per-environment (e.g. staging uses /api/beta), v2 silently
-# won't follow. Either add settings.API_PREFIX_V2, or derive it
-# programmatically from settings.API_PREFIX, before v2 has real traffic.
 app.include_router(v1_router, prefix=settings.API_PREFIX)
 app.include_router(v2_router, prefix="/api/v2")
 

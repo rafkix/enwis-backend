@@ -3,6 +3,8 @@ import time
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.core.config import settings
+
 logger = logging.getLogger("app.middleware")
 
 
@@ -39,12 +41,16 @@ class SecurityHeadersMiddleware:
     external security check. This is api.enwis.uz, so the policy is
     intentionally locked down (default-src 'none') since this origin
     only ever returns JSON / static files, never renders its own HTML
-    pages for end users. The interactive docs (/api/v1/docs, /api/v1/redoc,
-    DEBUG-only) load their own inline scripts/styles from a CDN, so CSP is
-    relaxed only on those two paths — everything else stays locked down.
+    pages for end users. The interactive docs (and their own small
+    login page) load inline styles/scripts, so CSP is relaxed only on
+    those paths — everything else stays locked down.
     """
 
-    _DOCS_PATHS = {"/api/v1/docs", "/api/v1/redoc", "/api/v1/docs/login"}
+    _DOCS_PATHS = {
+        f"{settings.API_PREFIX}/docs",
+        f"{settings.API_PREFIX}/redoc",
+        f"{settings.API_PREFIX}/docs/login",
+    }
 
     _LOCKED_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     _DOCS_CSP = (
@@ -68,13 +74,7 @@ class SecurityHeadersMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                # Uvicorn adds "server: uvicorn" by default — drop it so the
-                # response doesn't advertise the server software/version.
-                headers = [
-                    (k, v)
-                    for k, v in message.get("headers", [])
-                    if k.lower() != b"server"
-                ]
+                headers = message.setdefault("headers", [])
                 headers.extend(
                     [
                         (b"content-security-policy", csp.encode()),
@@ -91,7 +91,6 @@ class SecurityHeadersMiddleware:
                         ),
                     ]
                 )
-                message["headers"] = headers
             await send(message)
 
         await self.app(scope, receive, send_wrapper)

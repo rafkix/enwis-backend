@@ -15,13 +15,15 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Enwis Backend"
 
     # =========================
-    # API DOCS (/api/v1/docs, /api/v1/redoc) — HTTP Basic Auth bilan
-    # himoyalangan, DEBUG holatidan qat'i nazar har doim shu login/parol
-    # bilan ochiladi. .env'da albatta o'zgartiring — standart qiymatlar
-    # faqat local ishlab chiqish uchun.
+    # API DOCS (/api/v1/docs, /api/v1/redoc) — sahifa ko'rinishidagi login
+    # bilan himoyalangan, DEBUG holatidan qat'i nazar har doim shu
+    # login/parol so'raladi. Standart qiymat faqat local/test uchun —
+    # production'da agar bu placeholder o'zgartirilmagan bo'lsa, ilova
+    # pastdagi is_production tekshiruvida ishga tushishdan bosh tortadi
+    # (JWT_SECRET bilan bir xil andoza).
     # =========================
-    DOCS_USERNAME: str = "enwis"
-    DOCS_PASSWORD: str = "rafkix@1234"
+    DOCS_USERNAME: str = "admin"
+    DOCS_PASSWORD: str = "change-me-docs-password"
 
     # =========================
     # DATABASE
@@ -168,7 +170,7 @@ class Settings(BaseSettings):
                 raise ValueError("Production uchun kuchli INTERNAL_API_TOKEN kiriting")
             if not self.COOKIE_SECURE:
                 raise ValueError("Production muhitida COOKIE_SECURE=true bo'lishi kerak")
-            if self.DOCS_PASSWORD == "change-me":
+            if self.DOCS_PASSWORD == "change-me-docs-password":
                 raise ValueError(
                     "Production uchun DOCS_PASSWORD'ni .env'da o'zgartiring "
                     "(/api/v1/docs shu bilan himoyalangan)"
