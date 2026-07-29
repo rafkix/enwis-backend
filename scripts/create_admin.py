@@ -22,6 +22,13 @@ import asyncio
 
 from sqlalchemy import select
 
+# Import the full API router graph first. This pulls in every module's
+# models (e.g. Notification) so SQLAlchemy's mapper registry is complete
+# before we run any query — without this, importing just
+# app.modules.auth.models triggers "failed to locate a name" errors for
+# relationships that point at models from other modules.
+import app.api.v1  # noqa: F401
+
 from app.core.database import AsyncSessionLocal
 from app.core.security import hash_password
 from app.modules.auth.models import Role, User, UserStatus
@@ -40,7 +47,9 @@ async def _get_or_create_admin_role(db) -> Role:
 
 async def create_by_credentials(username: str, password: str, phone: str | None) -> None:
     async with AsyncSessionLocal() as db:
-        existing = await db.execute(select(User).where(User.username == username.lower()))
+        existing = await db.execute(
+            select(User).where(User.username == username.lower())
+        )
         if existing.scalar_one_or_none():
             print(f"Xato: '{username}' login allaqachon band.")
             return
@@ -64,9 +73,15 @@ async def create_by_credentials(username: str, password: str, phone: str | None)
         print(f"✅ Admin yaratildi. username={username}  id={user.id}")
 
 
-async def promote_telegram_user(telegram_id: str) -> None:
+async def promote_telegram_user(
+    telegram_id: str,
+    username: str | None = None,
+    password: str | None = None,
+) -> None:
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(User).where(User.telegram_id == str(telegram_id)))
+        result = await db.execute(
+            select(User).where(User.telegram_id == str(telegram_id))
+        )
         user = result.scalar_one_or_none()
         if not user:
             print(
@@ -77,13 +92,33 @@ async def promote_telegram_user(telegram_id: str) -> None:
 
         role = await _get_or_create_admin_role(db)
         await db.refresh(user, attribute_names=["roles"])
-        if role in user.roles:
+        if role not in user.roles:
+            user.roles.append(role)
+            print(f"'{user.username}' ADMIN qilindi.")
+        else:
             print(f"'{user.username}' allaqachon ADMIN.")
-            return
 
-        user.roles.append(role)
+        if username or password:
+            if not (username and password):
+                print(
+                    "Diqqat: login+parol o'rnatish uchun --username VA --password "
+                    "ikkalasi ham berilishi kerak. Parol o'rnatilmadi."
+                )
+            else:
+                existing = await db.execute(
+                    select(User).where(
+                        User.username == username.lower(), User.id != user.id
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    print(f"Xato: '{username}' login boshqa userda band — parol o'rnatilmadi.")
+                else:
+                    user.username = username.lower()
+                    user.password_hash = hash_password(password)
+                    print(f"Login+parol o'rnatildi: username={username}")
+
         await db.commit()
-        print(f"✅ '{user.username}' (telegram_id={telegram_id}) endi ADMIN.")
+        print(f"✅ Tayyor. id={user.id}  telegram_id={telegram_id}")
 
 
 def main() -> None:
@@ -98,11 +133,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.telegram_id:
-        asyncio.run(promote_telegram_user(args.telegram_id))
+        asyncio.run(
+            promote_telegram_user(args.telegram_id, args.username, args.password)
+        )
     elif args.username and args.password:
         asyncio.run(create_by_credentials(args.username, args.password, args.phone))
     else:
-        parser.error("Yo --telegram-id, yoki --username va --password birga berilishi kerak.")
+        parser.error(
+            "Yo --telegram-id, yoki --username va --password birga berilishi kerak."
+        )
 
 
 if __name__ == "__main__":
