@@ -119,6 +119,13 @@ class Settings(BaseSettings):
     # =========================
     # API
     # =========================
+    # APP_VERSION: Semantic Versioning (https://semver.org) of the
+    # backend codebase itself — bump per CHANGELOG.md on every release.
+    # API_VERSION / API_PREFIX: which URL-routing generation is active
+    # (v1, v2, ...). These are independent: the app can go from 1.4.0
+    # to 1.5.0 (APP_VERSION) while still only exposing /api/v1
+    # (API_PREFIX) routes.
+    APP_VERSION: str = "1.1.0"
     API_VERSION: str = "v1"
     API_PREFIX: str = "/api/v1"
 

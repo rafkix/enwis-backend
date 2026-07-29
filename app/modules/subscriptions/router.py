@@ -7,15 +7,20 @@ from app.core.database import get_db
 from app.modules.auth.dependencies import get_active_user
 from app.modules.auth.models import User
 from app.modules.subscriptions.schemas import (
-    PlanCreate,
     PlanListResponse,
     PlanResponse,
-    PlanUpdate,
     SubscribeRequest,
 )
 from app.modules.subscriptions.service import SubscriptionService
 
 router = APIRouter(prefix="/subscriptions", tags=["Subscriptions"])
+
+# NOTE: Plan CRUD (create/update/delete/seed) and payment moderation
+# (approve/reject) require ADMIN privileges and live in the `admin`
+# module (/admin/plans, /admin/payments) — they are intentionally not
+# exposed here. This router is the read-only, user-facing surface plus
+# the free-plan direct-subscribe shortcut. Paid plans go through
+# /billing/payments (see billing_router.py).
 
 
 def get_service(db: AsyncSession = Depends(get_db)) -> SubscriptionService:
@@ -39,43 +44,14 @@ async def get_plan(
     return await service.get_plan(uuid.UUID(plan_id))
 
 
-@router.post("/plans", response_model=PlanResponse, status_code=201)
-async def create_plan(
-    payload: PlanCreate,
-    user: User = Depends(get_active_user),
-    service: SubscriptionService = Depends(get_service),
-):
-    return await service.create_plan(payload.model_dump())
-
-
-@router.put("/plans/{plan_id}", response_model=PlanResponse)
-async def update_plan(
-    plan_id: str,
-    payload: PlanUpdate,
-    user: User = Depends(get_active_user),
-    service: SubscriptionService = Depends(get_service),
-):
-    return await service.update_plan(
-        uuid.UUID(plan_id),
-        {k: v for k, v in payload.model_dump().items() if v is not None},
-    )
-
-
-@router.delete("/plans/{plan_id}", status_code=204)
-async def delete_plan(
-    plan_id: str,
-    user: User = Depends(get_active_user),
-    service: SubscriptionService = Depends(get_service),
-):
-    await service.delete_plan(uuid.UUID(plan_id))
-
-
 @router.post("/subscribe", status_code=201)
 async def subscribe(
     payload: SubscribeRequest,
     user: User = Depends(get_active_user),
     service: SubscriptionService = Depends(get_service),
 ):
+    """Direct activation — only works for free (price == 0) plans. Paid
+    plans must go through POST /billing/payments instead."""
     return await service.subscribe(user.id, payload.plan_id, payload.payment_id)
 
 
@@ -106,12 +82,3 @@ async def get_my_subscription_history(
 ):
     history = await service.get_user_subscription_history(user.id)
     return {"items": history}
-
-
-@router.post("/seed", status_code=200)
-async def seed_plans(
-    user: User = Depends(get_active_user),
-    service: SubscriptionService = Depends(get_service),
-):
-    await service.seed_default_plans()
-    return {"success": True, "message": "Default plans seeded"}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import enum
 import re
 from datetime import date, datetime
 from uuid import UUID
@@ -10,70 +9,10 @@ from pydantic import BaseModel, Field, field_validator
 from app.modules.auth.models import UserStatus
 
 
-class CEFRLevel(enum.StrEnum):
-    A1 = "A1"
-    A2 = "A2"
-    B1 = "B1"
-    B2 = "B2"
-    C1 = "C1"
-    C2 = "C2"
-
-
-class IELTSGoal(enum.StrEnum):
-    UNIVERSITY = "university"
-    IMMIGRATION = "immigration"
-    WORK = "work"
-    PERSONAL = "personal"
-    OTHER = "other"
-
-
-class CEFRGoal(enum.StrEnum):
-    TRAVEL = "travel"
-    BUSINESS = "business"
-    ACADEMIC = "academic"
-    DAILY = "daily"
-    EXAM = "exam"
-    OTHER = "other"
-
-
-class IELTSMeta(BaseModel):
-    current_score: float | None = Field(None, ge=0, le=9)
-    listening: float | None = Field(None, ge=0, le=9)
-    reading: float | None = Field(None, ge=0, le=9)
-    writing: float | None = Field(None, ge=0, le=9)
-    speaking: float | None = Field(None, ge=0, le=9)
-    target_score: float | None = Field(None, ge=0, le=9)
-    target_listening: float | None = Field(None, ge=0, le=9)
-    target_reading: float | None = Field(None, ge=0, le=9)
-    target_writing: float | None = Field(None, ge=0, le=9)
-    target_speaking: float | None = Field(None, ge=0, le=9)
-    exam_date: date | None = None
-    attempts: int | None = Field(None, ge=0)
-    goal: IELTSGoal | None = None
-    goal_note: str | None = Field(None, max_length=200)
-
-    @field_validator("current_score", "target_score", mode="before")
-    @classmethod
-    def round_score(cls, v):
-        if v is None:
-            return v
-        return round(v * 2) / 2
-
-
-class CEFRMeta(BaseModel):
-    level: CEFRLevel | None = None
-    target_level: CEFRLevel | None = None
-    goal: CEFRGoal | None = None
-    goal_note: str | None = Field(None, max_length=200)
-    assessed_at: date | None = None
-
-
 class UserMeta(BaseModel):
     version: int = 1
     bio: str | None = Field(None, max_length=500)
     birth_date: date | None = None
-    ielts: IELTSMeta | None = None
-    cefr: CEFRMeta | None = None
 
 
 class UserResponse(BaseModel):

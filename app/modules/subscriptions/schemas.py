@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PlanCreate(BaseModel):
@@ -91,3 +91,142 @@ class CancelSubscriptionRequest(BaseModel):
 class PlanListResponse(BaseModel):
     items: list[PlanResponse]
     total: int
+
+
+# ─────────────────────────────────────────────────────────────────
+# Billing: payment cards (admin-managed receiving cards)
+# ─────────────────────────────────────────────────────────────────
+
+
+class PaymentCardCreate(BaseModel):
+    card_number: str = Field(..., min_length=12, max_length=32)
+    card_holder_name: str = Field(..., min_length=1, max_length=100)
+    bank_name: str | None = Field(None, max_length=100)
+    sort_order: int = 0
+
+    @field_validator("card_number")
+    @classmethod
+    def clean_card_number(cls, v: str) -> str:
+        digits = "".join(ch for ch in v if ch.isdigit())
+        if not (12 <= len(digits) <= 19):
+            raise ValueError("Card number must contain 12-19 digits")
+        return digits
+
+
+class PaymentCardUpdate(BaseModel):
+    card_number: str | None = Field(None, min_length=12, max_length=32)
+    card_holder_name: str | None = Field(None, min_length=1, max_length=100)
+    bank_name: str | None = Field(None, max_length=100)
+    is_active: bool | None = None
+    sort_order: int | None = None
+
+    @field_validator("card_number")
+    @classmethod
+    def clean_card_number(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        digits = "".join(ch for ch in v if ch.isdigit())
+        if not (12 <= len(digits) <= 19):
+            raise ValueError("Card number must contain 12-19 digits")
+        return digits
+
+
+class PaymentCardResponse(BaseModel):
+    id: UUID
+    card_number: str
+    card_holder_name: str
+    bank_name: str | None
+    is_active: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PaymentCardListResponse(BaseModel):
+    items: list[PaymentCardResponse]
+    total: int
+
+
+# ─────────────────────────────────────────────────────────────────
+# Billing: payments (manual card-transfer purchase flow)
+# ─────────────────────────────────────────────────────────────────
+
+
+class InitiatePaymentRequest(BaseModel):
+    plan_id: UUID
+    method: str = Field(
+        "manual_card",
+        description=(
+            "Payment method: 'manual_card' (implemented today). "
+            "'payme' / 'click' / 'uzcard' are reserved for future gateway integrations."
+        ),
+    )
+    card_id: UUID | None = Field(
+        None,
+        description=(
+            "Which receiving card the user intends to pay to (manual_card only). "
+            "If omitted, the first active card is used."
+        ),
+    )
+
+
+class PaymentEventResponse(BaseModel):
+    id: UUID
+    from_status: str | None
+    to_status: str
+    actor_id: UUID | None
+    note: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PaymentResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    plan_id: UUID
+    plan_name: str | None = None
+    card_id: UUID | None
+    card: PaymentCardResponse | None = None
+    subscription_id: UUID | None
+    amount: int
+    currency: str
+    status: str
+    method: str = "manual_card"
+    receipt_image: bool = False
+    receipt_uploaded_at: datetime | None
+    reviewed_by_id: UUID | None
+    reviewed_at: datetime | None
+    rejection_reason: str | None
+    admin_note: str | None
+    expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    events: list[PaymentEventResponse] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class PaymentListResponse(BaseModel):
+    items: list[PaymentResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class RejectPaymentRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class ApprovePaymentRequest(BaseModel):
+    note: str | None = Field(None, max_length=500)
+
+
+class BillingCheckoutInfo(BaseModel):
+    """What the client needs to render the "pay to this card" screen."""
+
+    payment: PaymentResponse
+    cards: list[PaymentCardResponse]

@@ -180,6 +180,22 @@ async def init_db() -> None:
                 "group_quiz_id",
                 "ALTER TABLE test_practice_attempts ADD COLUMN group_quiz_id CHAR(32)",
             )
+            # Billing (added when the manual-card-transfer payment review
+            # flow replaced the old payment_logs table; safe no-op if the
+            # payments table doesn't exist yet, since create_all above
+            # would have already created it with these columns).
+            await add_column_if_not_exists(
+                conn,
+                "payments",
+                "method",
+                "ALTER TABLE payments ADD COLUMN method VARCHAR(20) NOT NULL DEFAULT 'manual_card'",
+            )
+            await add_column_if_not_exists(
+                conn,
+                "payments",
+                "provider_ref",
+                "ALTER TABLE payments ADD COLUMN provider_ref VARCHAR(255)",
+            )
 
             await conn.execute(
                 text(

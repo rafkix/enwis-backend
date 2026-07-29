@@ -70,7 +70,11 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 # Uvicorn adds "server: uvicorn" by default — drop it so the
                 # response doesn't advertise the server software/version.
-                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"server"]
+                headers = [
+                    (k, v)
+                    for k, v in message.get("headers", [])
+                    if k.lower() != b"server"
+                ]
                 headers.extend(
                     [
                         (b"content-security-policy", csp.encode()),

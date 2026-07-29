@@ -1,3 +1,144 @@
+# CHANGELOG
+
+All notable changes to the Enwis backend are documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and the project adheres to [Semantic Versioning](https://semver.org/)
+(`MAJOR.MINOR.PATCH`) starting from this entry. `Settings.APP_VERSION`
+in `app/core/config.py` and `FastAPI(version=...)` in `app/main.py`
+track this number; bump both together with every release.
+
+---
+
+## [1.1.0] - 2026-07-29
+
+Production refactor: removed the IELTS/CEFR user-profile fields,
+rewrote billing as a manual card-transfer + admin-review flow with a
+provider abstraction for future payment gateways, added a full admin
+panel, and introduced `/api/v1` / `/api/v2`-ready URL versioning.
+
+### Removed
+
+- **IELTS/CEFR user-profile fields.** `CEFRLevel`, `IELTSGoal`,
+  `CEFRGoal`, `IELTSMeta`, `CEFRMeta` and the `UserMeta.ielts` /
+  `UserMeta.cefr` fields (`app/modules/users/schemas.py`). This was the
+  only place IELTS/CEFR existed in the codebase — no models, routers,
+  services, or migrations referenced it elsewhere. `main.py`'s API
+  description text updated accordingly. Existing user rows with
+  `meta.ielts` / `meta.cefr` JSON keys are unaffected (Pydantic ignores
+  unknown keys by default) but those keys are no longer read or written
+  going forward.
+- **`PaymentLog` model / `payment_logs` table** — superseded by
+  `Payment` + `PaymentEvent` (see below). The old table is left in
+  place on existing databases (no destructive auto-migration); it can
+  be dropped manually once you've confirmed nothing else reads it.
+- **Unauthenticated plan-mutation endpoints** on `/subscriptions/*`
+  (`create_plan` / `update_plan` / `delete_plan` / `seed` used to be
+  reachable by *any* logged-in user — a real security bug). Moved to
+  `/admin/plans/*`, gated by the `ADMIN` role.
+
+### Added
+
+- **Billing rewrite** (`app/modules/subscriptions/`):
+  - `PaymentStatus`: `PENDING`, `WAITING_FOR_REVIEW`, `APPROVED`,
+    `REJECTED`, `EXPIRED`, `CANCELLED`.
+  - `Payment` model — plan price/currency snapshotted at creation time
+    (so a later price change can't retroactively alter an in-flight or
+    historical payment), receipt image path, reviewer, rejection
+    reason, review deadline.
+  - `PaymentEvent` model — an immutable transaction-history row written
+    on every status transition, independent of the mutable `Payment`
+    row (full audit trail for "transaction history").
+  - `PaymentCard` model — admin-managed receiving cards shown to users
+    at checkout.
+  - Flow: `POST /billing/payments` (select plan, get card to pay to) ->
+    `POST /billing/payments/{id}/receipt` (upload screenshot, JPEG/PNG/
+    WebP/PDF, 5&nbsp;MB max) -> `POST /admin/payments/{id}/approve` or
+    `/reject` -> subscription is activated/renewed automatically on
+    approval, user notified either way.
+  - `GET /billing/payments`, `/billing/payments/{id}` — a user's own
+    transaction history. `POST /billing/payments/{id}/cancel` to back
+    out before review.
+  - Background sweeper (`app/main.py`'s lifespan task, every 15 min)
+    auto-expires payments that sit in `PENDING` >60 min without a
+    receipt, or `WAITING_FOR_REVIEW` >72 h without an admin decision.
+  - **Payment-provider abstraction** (`app/modules/subscriptions/providers/`)
+    so a real gateway (Payme/Click/Uzcard) can be added later without
+    touching `BillingService`, routers, or schemas: `BasePaymentProvider`
+    interface, `ManualCardProvider` (today's only implementation),
+    `PaymentMethod` enum reserving `payme` / `click` / `uzcard`, a
+    provider registry, and `POST /billing/webhooks/{provider}` as the
+    single landing point for future gateway callbacks (currently
+    returns `501` for unregistered providers). See the docstring in
+    `providers/__init__.py` for the exact steps to plug in a new one.
+- **Admin panel** (`app/modules/admin/`, all endpoints under `/admin`,
+  `ADMIN` role required):
+  - `GET /admin/dashboard` — user/payment/subscription/content stats.
+  - `GET/PATCH/DELETE /admin/users*` — search & paginate, change
+    status (pending/active/blocked), change roles, soft-delete.
+  - `GET/POST /admin/payments*`, `/approve`, `/reject`, `/receipt` —
+    payment moderation and receipt-image viewing.
+  - `GET/POST/PUT/DELETE /admin/plans*`, `/admin/plans/seed` — plan
+    management (moved here from the public subscriptions router).
+  - `GET/POST/PUT/DELETE /admin/cards*` — manage which receiving
+    card(s) are shown to users, edit numbers/holder/bank/active state.
+  - `GET /admin/logs` — `AdminAuditLog`: every admin mutation
+    (status/role changes, payment decisions, plan/card CRUD) is written
+    to an immutable audit table alongside the mutation itself, inside
+    the same DB transaction.
+- **API versioning architecture** (`app/api/`):
+  - `app/api/v1/__init__.py` aggregates every module router into one
+    `v1_router`; `app/main.py` mounts it under `settings.API_PREFIX`
+    (`/api/v1`) instead of looping over a hardcoded router list.
+  - `app/api/v2/__init__.py` is a working placeholder (mounted at
+    `/api/v2`, responds, documented) showing exactly how to build a
+    real v2 later by reusing unchanged v1 routers and swapping out only
+    the ones that changed — see its module docstring.
+  - `Settings.APP_VERSION` (SemVer, this file) added alongside the
+    existing `Settings.API_VERSION` / `API_PREFIX` (URL-routing
+    generation) — they're independent and both now flow into
+    `FastAPI(version=...)`, `/`, and the docs endpoints instead of
+    being hardcoded in three places.
+- Test coverage: `tests/test_billing_admin.py` (8 tests covering the
+  free-vs-paid-plan split, the full approve/reject lifecycle, provider
+  extensibility, and dashboard stats).
+
+### Fixed
+
+- `SubscriptionRepository.get_active_by_user` crashed with
+  `TypeError: can't compare offset-naive and offset-aware datetimes`
+  whenever a subscription's `expires_at` came back from SQLite without
+  tzinfo (which SQLite always does) — normalized both sides before
+  comparing so it works on SQLite (dev) and Postgres (prod) alike.
+
+### Security
+
+- Plan CRUD and payment moderation now require the `ADMIN` role (see
+  "Removed" above) — previously reachable by any authenticated user.
+- Receipt screenshots are stored under `static/payment-proofs/`, which
+  `app/main.py`'s `PublicStaticFiles` already blocked from direct
+  public access; they're only ever served through the authenticated
+  `/billing/payments/{id}/receipt` (owner) or `/admin/payments/{id}/receipt`
+  (admin) endpoints.
+- Payment amount is always taken from the `Plan` server-side at
+  initiation time — never accepted from the client — preventing price
+  tampering.
+
+### Migration notes
+
+Idempotent `ALTER TABLE` migrations were added to
+`app/core/database.py::init_db` for the new `payments.method` and
+`payments.provider_ref` columns, following this codebase's existing
+lightweight SQLite migration pattern (no Alembic environment exists in
+this project yet — `alembic` is declared in `requirements.txt` but
+unused; consider wiring up a real migration environment before this
+table set grows much further). All other new tables (`payments`,
+`payment_cards`, `payment_events`, `admin_audit_logs`) are created
+automatically by `Base.metadata.create_all` since they're new tables,
+not new columns on existing ones.
+
+---
+
 # CHANGELOG — Backend audit & fixes
 
 This pass focused on the exact complaint in the brief: Tests, Questions
