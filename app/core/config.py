@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     # pastdagi is_production tekshiruvida ishga tushishdan bosh tortadi
     # (JWT_SECRET bilan bir xil andoza).
     # =========================
-    DOCS_USERNAME: str = "admin"
-    DOCS_PASSWORD: str = "change-me-docs-password"
+    DOCS_USERNAME: str = "enwis"
+    DOCS_PASSWORD: str = "rafkix@1234"
 
     # =========================
     # DATABASE

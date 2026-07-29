@@ -260,7 +260,7 @@ class TestService:
         slug = str(test.id)
         return {
             "slug": slug,
-            "public_url": f"https://test.enwis.uz/t/{slug}",
+            "public_url": f"https://test.enwis.uz/tests/{slug}",
         }
 
     # ── Public browsing (test.enwis.uz — anonymous) ─────────────────────
