@@ -32,10 +32,18 @@ class UserResponse(BaseModel):
     roles: list[str] = Field(default_factory=list)
     meta: UserMeta | None = None
     has_password: bool = False
+    requires_phone_verification: bool = False
+    requires_password_setup: bool = False
     referral_code: str | None = None
     xp: int = 0
     level: int = 1
     streak: int = 0
+    is_teacher: bool = False
+    teacher_verified_at: datetime | None = None
+    subscription_tier: str = "FREE"
+    subscription_status: str | None = None
+    subscription_expires_at: datetime | None = None
+    has_active_subscription: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -49,8 +57,10 @@ class ApiResponse(BaseModel):
 
 
 class UpdateUserSchema(BaseModel):
-    full_name: str | None = Field(None, min_length=1, max_length=255)
-    username: str | None = Field(None, min_length=4, max_length=30)
+    full_name: str | None = Field(None, min_length=2, max_length=255)
+    username: str | None = Field(None, min_length=3, max_length=30)
+    email: str | None = Field(None, max_length=255)
+    phone: str | None = Field(None, max_length=20)
     meta: UserMeta | None = None
 
     @field_validator("username")
@@ -61,6 +71,25 @@ class UpdateUserSchema(BaseModel):
         if not re.match(r"^[a-zA-Z0-9._]+$", v):
             raise ValueError("Username must contain only letters, numbers, underscores, and dots")
         return v.lower()
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v):
+        if v is None:
+            return v
+        if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", v):
+            raise ValueError("Invalid email format")
+        return v.strip().lower()
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, v):
+        if v is None:
+            return v
+        cleaned = re.sub(r"\s+", "", v)
+        if not re.match(r"^\+?[0-9]{7,15}$", cleaned):
+            raise ValueError("Invalid phone number format")
+        return cleaned
 
 
 class UpdateAvatarSchema(BaseModel):
@@ -165,6 +194,10 @@ class PlanInfo(BaseModel):
     status: str = "active"
     expires_at: datetime | None = None
     features: list[str] = Field(default_factory=list)
+    # AI usage info
+    ai_questions_used: int = 0
+    ai_questions_monthly_limit: int = 0  # 0 = yo'q, -1 = cheksiz
+    ai_questions_reset_at: datetime | None = None
 
 
 class AccountSummary(BaseModel):

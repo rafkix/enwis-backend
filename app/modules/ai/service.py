@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -12,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.plans import can_use_ai, get_user_plan_tier
+from app.core.plans import can_use_ai, get_ai_monthly_limit, get_user_plan_tier
 from app.modules.ai.exceptions import (
     AIGenerationError,
     AINoApiKeyError,
@@ -233,14 +234,47 @@ class AIService:
         # 1. Validate inputs
         self._validate_request(request)
 
-        # 2. Permission check
+        # 2. Permission check + monthly AI limit
         tier = get_user_plan_tier(user.subscription_tier)
-        if not can_use_ai(tier):
+        override = user.ai_questions_quota_override
+        # Admin tomonidan aniq quota belgilangan bo'lsa (va u 0 dan katta yoki
+        # cheksiz bo'lsa), bu tier'ning ai_generation cheklovidan ustun turadi —
+        # aks holda FREE foydalanuvchiga individual ruxsat berib bo'lmas edi.
+        override_grants_access = override is not None and override != 0
+        if not can_use_ai(tier) and not override_grants_access:
             raise HTTPException(
                 403,
-                "AI question generation is not available on your current plan. "
-                "Upgrade to PRO or PREMIUM.",
+                "AI savol generatsiyasi sizning tarifingizda mavjud emas. "
+                "Teacher, Pro yoki Premium tarifiga o'ting.",
             )
+
+        # Oylik limitni tekshir va hisoblagichni yangilash.
+        # Admin har bir foydalanuvchi uchun individual quota belgilagan
+        # bo'lsa (ai_questions_quota_override), u tier standartidan ustun
+        # turadi: None -> tier bo'yicha, -1 -> cheksiz, N -> aniq son.
+        monthly_limit = override if override is not None else get_ai_monthly_limit(tier)
+        if monthly_limit != -1:
+            # Oy boshi tekshiruvi — yangi oy bo'lsa hisoblagichni reset qil
+            now = datetime.now(UTC)
+            reset_at = user.ai_questions_reset_at
+            if reset_at is None or reset_at.year != now.year or reset_at.month != now.month:
+                user.ai_questions_used = 0
+                user.ai_questions_reset_at = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            remaining = monthly_limit - user.ai_questions_used
+            needed = request.question_count
+            if remaining <= 0:
+                raise HTTPException(
+                    429,
+                    f"Oylik AI limit tugadi ({monthly_limit} ta). "
+                    "Keyingi oyda yoki yuqori tarifga o'tib davom eting.",
+                )
+            if needed > remaining:
+                raise HTTPException(
+                    429,
+                    f"So'ralgan savol soni ({needed}) oylik qolgan limitdan "
+                    f"({remaining}) ko'p. Kamroq so'rang yoki tarifni yangilang.",
+                )
 
         # 3. Verify test ownership & status
         test = await self._get_test(test_id, user.id)
@@ -309,6 +343,11 @@ class AIService:
 
         # 7. Persist in a transaction
         created = await self._persist_questions(test, validated, user.id)
+
+        # 8. Increment AI usage counter (limit != -1 bo'lganda)
+        if monthly_limit != -1:
+            user.ai_questions_used += len(created)
+            await self.db.commit()
 
         duration_ms = round((time.monotonic() - start) * 1000, 1)
         logger.info(

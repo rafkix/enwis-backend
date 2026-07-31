@@ -11,6 +11,7 @@ from fastapi import APIRouter
 
 from app.modules.admin import admin_router
 from app.modules.auth import auth_router
+from app.modules.billing import billing_router as billing_module_router
 from app.modules.dashboard import dashboard_router, public_router
 from app.modules.notifications import notifications_router
 from app.modules.subscriptions import billing_router, subscriptions_router, webhook_router
@@ -46,6 +47,8 @@ _v1_module_routers = [
     # test.enwis.uz — public discovery + practice-taking
     # (Google/Telegram login only)
     tests_public_router,
+    # ── Billing module (pricing, discounts, promo codes, teacher package) ──
+    billing_module_router,
     # ── Notifications ────────────────────────────────────────────
     notifications_router,
     # ── Subscriptions & billing ───────────────────────────────────

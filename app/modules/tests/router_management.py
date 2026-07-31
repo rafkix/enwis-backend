@@ -20,11 +20,17 @@ from app.core.database import get_db
 from app.modules.auth.dependencies import get_active_user
 from app.modules.auth.models import User
 from app.modules.questions.schemas import QuestionCreate, QuestionResponse, QuestionUpdate
+from app.modules.tests.question_service import QuestionService
 from app.modules.tests.router_common import question_to_response, test_to_response
 from app.modules.tests.schemas import (
+    RaschCalibrateRequest,
+    RaschCalibrateResponse,
+    RaschGenerateTestRequest,
+    RaschGenerateTestResponse,
     TestAIQuestionGenerateRequest,
     TestCreate,
     TestListResponse,
+    TestQuestionAnalysisResponse,
     TestQuestionOrder,
     TestResponse,
     TestSettingsUpdate,
@@ -32,6 +38,10 @@ from app.modules.tests.schemas import (
     TestUpdate,
 )
 from app.modules.tests.service import TestService, TestSettingsNotFoundException
+
+
+def get_question_service(db: AsyncSession = Depends(get_db)) -> QuestionService:
+    return QuestionService(db)
 
 router = APIRouter(prefix="/tests", tags=["Tests — Management (app.enwis.uz)"])
 
@@ -123,6 +133,51 @@ async def download_import_template_csv(
 # Dynamic /{test_id} routes — everything above this line must stay
 # above it, or FastAPI will swallow those paths as {test_id}.
 # =====================================================================
+
+
+@router.post("/rasch/calibrate", response_model=RaschCalibrateResponse)
+async def calibrate_rasch(
+    payload: RaschCalibrateRequest,
+    user: User = Depends(get_active_user),
+    service: QuestionService = Depends(get_question_service),
+):
+    """O'z savollarining Rasch qiyinlik parametrini (irt_b) haqiqiy
+    javob tarixi (test.enwis.uz amaliyoti + ro'yxatdan o'tilgan
+    imtihonlar) asosida qayta hisoblaydi. Yangi javoblar to'planganda
+    vaqti-vaqti bilan qayta chaqirilishi tavsiya etiladi."""
+    is_admin = any(r.name.upper() == "ADMIN" for r in (user.roles or []))
+    result = await service.calibrate_rasch(
+        owner_id=user.id,
+        question_ids=payload.question_ids,
+        is_admin=is_admin,
+    )
+    return result
+
+
+@router.post("/rasch/generate", response_model=RaschGenerateTestResponse, status_code=201)
+async def generate_rasch_test(
+    payload: RaschGenerateTestRequest,
+    user: User = Depends(get_active_user),
+    service: QuestionService = Depends(get_question_service),
+):
+    """Rasch modeliga asoslangan test yaratadi: berilgan maqsadli
+    qobiliyat darajasiga (`target_theta`) eng mos, eng informativ
+    savollarni tanlab, ulardan yangi (qoralama) Test tuziladi.
+    Savollar avval `/tests/rasch/calibrate` orqali kalibrlangan
+    bo'lishi kerak (yoki `require_calibrated=false`)."""
+    result = await service.generate_rasch_test(
+        owner_id=user.id,
+        title=payload.title,
+        description=payload.description,
+        target_theta=payload.target_theta,
+        num_questions=payload.num_questions,
+        question_bank_id=payload.question_bank_id,
+        category_id=payload.category_id,
+        require_calibrated=payload.require_calibrated,
+        min_gap=payload.min_gap,
+    )
+    result["test"] = test_to_response(result["test"])
+    return result
 
 
 @router.get("/{test_id}", response_model=TestResponse)
@@ -244,6 +299,18 @@ async def test_statistics(
     service: TestService = Depends(get_test_service),
 ):
     return await service.get_statistics(uuid.UUID(test_id), user.id)
+
+
+@router.get("/{test_id}/questions/analysis", response_model=TestQuestionAnalysisResponse)
+async def analyze_test_questions(
+    test_id: str,
+    user: User = Depends(get_active_user),
+    service: TestService = Depends(get_test_service),
+):
+    """Per-question item analysis (difficulty p-value, discrimination,
+    and a review flag) computed from real answer history for this test.
+    """
+    return await service.analyze_questions(uuid.UUID(test_id), user.id)
 
 
 # ── Questions (managed entirely inside Test — no standalone /questions API) ──

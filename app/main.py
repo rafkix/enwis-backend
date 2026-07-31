@@ -26,6 +26,7 @@ from app.core.middleware import RequestLoggerMiddleware, SecurityHeadersMiddlewa
 from app.api.v1 import v1_router
 from app.api.v2 import v2_router
 from app.modules.auth.models import Role
+from app.modules.billing.service import BillingService as BillingModuleService
 from app.modules.subscriptions.service import BillingService
 
 logging.basicConfig(
@@ -74,6 +75,12 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Enwis Backend API...")
     await init_db()
     await _seed_roles()
+    # Seed pricing plans and teacher package
+    async with AsyncSessionLocal() as db:
+        billing_svc = BillingModuleService(db)
+        await billing_svc.seed_default_pricing_plans()
+        await billing_svc.create_default_teacher_package()
+        await db.commit()
     logger.info("Database initialized")
 
     checker_task = asyncio.create_task(_payment_expiry_sweep_loop())

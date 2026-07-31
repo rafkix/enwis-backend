@@ -20,6 +20,21 @@ class AdminUserSummary(BaseModel):
     new_this_week: int = 0
 
 
+class AdminTeacherPurchaseSummary(BaseModel):
+    """Status breakdown for the separate one-time Teacher Package
+    purchase flow (app.modules.billing), so pending/waiting-for-review
+    teacher purchases show up in admin dashboards instead of being
+    invisible next to the regular subscription Payment stats."""
+
+    pending: int = 0
+    waiting_for_review: int = 0
+    completed: int = 0
+    rejected: int = 0
+    expired: int = 0
+    cancelled: int = 0
+    revenue: int = 0
+
+
 class AdminPaymentSummary(BaseModel):
     pending: int = 0
     waiting_for_review: int = 0
@@ -28,6 +43,15 @@ class AdminPaymentSummary(BaseModel):
     expired: int = 0
     cancelled: int = 0
     total_revenue: int = 0
+    # Combined totals across both payment sources (subscription Payment +
+    # Teacher Package purchase) so a single number reflects everything an
+    # admin needs to review, without hiding the breakdown below.
+    combined_pending: int = 0
+    combined_waiting_for_review: int = 0
+    combined_revenue: int = 0
+    teacher_purchases: AdminTeacherPurchaseSummary = Field(
+        default_factory=AdminTeacherPurchaseSummary
+    )
 
 
 class AdminSubscriptionSummary(BaseModel):
@@ -67,6 +91,8 @@ class AdminUserListItem(BaseModel):
     is_verified: bool
     roles: list[str] = Field(default_factory=list)
     subscription_tier: str
+    ai_questions_used: int = 0
+    ai_questions_quota_override: int | None = None
     created_at: datetime
     last_login_at: datetime | None
 
@@ -83,6 +109,19 @@ class AdminUserListItem(BaseModel):
     @classmethod
     def coerce_status(cls, v):
         return v.value if hasattr(v, "value") else str(v)
+
+
+class UpdateUserAIQuotaRequest(BaseModel):
+    """Admin override for a user's monthly AI-question quota.
+
+    ``quota_override``:
+        None -> tier bo'yicha standart limitga qaytariladi (override o'chiriladi)
+        -1   -> shu foydalanuvchi uchun cheksiz
+        0..N -> tier'dan mustaqil aniq oylik son
+    """
+
+    quota_override: int | None = Field(None, ge=-1)
+    reason: str | None = Field(None, max_length=500)
 
 
 class AdminUserListResponse(BaseModel):

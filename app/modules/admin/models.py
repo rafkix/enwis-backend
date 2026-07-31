@@ -18,6 +18,7 @@ class AdminAction(enum.StrEnum):
 
     USER_STATUS_CHANGED = "user.status_changed"
     USER_ROLES_CHANGED = "user.roles_changed"
+    USER_AI_QUOTA_CHANGED = "user.ai_quota_changed"
     USER_DELETED = "user.deleted"
     PAYMENT_APPROVED = "payment.approved"
     PAYMENT_REJECTED = "payment.rejected"

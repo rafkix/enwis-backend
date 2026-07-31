@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -140,6 +141,18 @@ class Question(Base):
     )
     score: Mapped[int] = mapped_column(Integer, default=1)
     explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── Rasch (1-parameter IRT) calibration ─────────────────────────
+    # irt_b: item difficulty parameter (logit scale). Estimated from
+    # real response data via Joint Maximum Likelihood Estimation (see
+    # app.modules.questions.rasch). NULL until calibrated at least
+    # once — falls back to the categorical `difficulty` enum above
+    # for any question that has never been calibrated.
+    irt_b: Mapped[float | None] = mapped_column(Float, nullable=True)
+    irt_calibrated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    irt_n_responses: Mapped[int] = mapped_column(Integer, default=0)
     visibility: Mapped[Visibility] = mapped_column(
         SAEnum(Visibility), default=Visibility.PRIVATE, index=True
     )

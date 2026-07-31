@@ -168,6 +168,26 @@ async def init_db() -> None:
                 "teacher_verified_at",
                 "ALTER TABLE users ADD COLUMN teacher_verified_at DATETIME",
             )
+            # AI usage tracking — oylik limit (TEACHER=10, PRO=50, PREMIUM=100)
+            await add_column_if_not_exists(
+                conn,
+                "users",
+                "ai_questions_used",
+                "ALTER TABLE users ADD COLUMN ai_questions_used INTEGER NOT NULL DEFAULT 0",
+            )
+            await add_column_if_not_exists(
+                conn,
+                "users",
+                "ai_questions_reset_at",
+                "ALTER TABLE users ADD COLUMN ai_questions_reset_at DATETIME",
+            )
+            # Admin-set per-user quota override (NULL = tier default, -1 = unlimited)
+            await add_column_if_not_exists(
+                conn,
+                "users",
+                "ai_questions_quota_override",
+                "ALTER TABLE users ADD COLUMN ai_questions_quota_override INTEGER",
+            )
             await add_column_if_not_exists(
                 conn,
                 "phone_registration_tickets",
@@ -179,6 +199,28 @@ async def init_db() -> None:
                 "test_practice_attempts",
                 "group_quiz_id",
                 "ALTER TABLE test_practice_attempts ADD COLUMN group_quiz_id CHAR(32)",
+            )
+            # Rasch (1-parameter IRT) calibration — item difficulty (logit
+            # scale) estimated from real response data, used to assemble
+            # tests targeted at a given ability level (see
+            # app.modules.questions.rasch).
+            await add_column_if_not_exists(
+                conn,
+                "qb_questions",
+                "irt_b",
+                "ALTER TABLE qb_questions ADD COLUMN irt_b FLOAT",
+            )
+            await add_column_if_not_exists(
+                conn,
+                "qb_questions",
+                "irt_calibrated_at",
+                "ALTER TABLE qb_questions ADD COLUMN irt_calibrated_at DATETIME",
+            )
+            await add_column_if_not_exists(
+                conn,
+                "qb_questions",
+                "irt_n_responses",
+                "ALTER TABLE qb_questions ADD COLUMN irt_n_responses INTEGER NOT NULL DEFAULT 0",
             )
             # Billing (added when the manual-card-transfer payment review
             # flow replaced the old payment_logs table; safe no-op if the
@@ -196,6 +238,21 @@ async def init_db() -> None:
                 "provider_ref",
                 "ALTER TABLE payments ADD COLUMN provider_ref VARCHAR(255)",
             )
+            # Teacher purchase review flow (fixes the free-teacher-role
+            # bug: purchase used to instantly complete with no payment
+            # verification — now goes through the same pending ->
+            # waiting_for_review -> completed/rejected admin-review flow).
+            for _col, _ddl in [
+                ("card_id", "ALTER TABLE teacher_purchases ADD COLUMN card_id CHAR(32)"),
+                ("receipt_image", "ALTER TABLE teacher_purchases ADD COLUMN receipt_image BOOLEAN NOT NULL DEFAULT 0"),
+                ("receipt_uploaded_at", "ALTER TABLE teacher_purchases ADD COLUMN receipt_uploaded_at DATETIME"),
+                ("reviewed_by_id", "ALTER TABLE teacher_purchases ADD COLUMN reviewed_by_id CHAR(32)"),
+                ("reviewed_at", "ALTER TABLE teacher_purchases ADD COLUMN reviewed_at DATETIME"),
+                ("rejection_reason", "ALTER TABLE teacher_purchases ADD COLUMN rejection_reason TEXT"),
+                ("admin_note", "ALTER TABLE teacher_purchases ADD COLUMN admin_note TEXT"),
+                ("expires_at", "ALTER TABLE teacher_purchases ADD COLUMN expires_at DATETIME"),
+            ]:
+                await add_column_if_not_exists(conn, "teacher_purchases", _col, _ddl)
 
             await conn.execute(
                 text(

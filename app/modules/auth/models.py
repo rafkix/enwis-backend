@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Table,
     UniqueConstraint,
@@ -126,6 +127,23 @@ class User(Base, TimestampMixin):
     subscription_tier_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # AI usage tracking (monthly reset)
+    # Foydalanuvchi joriy oyda nechta AI savol generatsiya qildi.
+    # Har oyning 1-sanasida 0 ga qaytariladi (reset_at tekshiriladi).
+    ai_questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ai_questions_reset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Admin-set per-user override of the tier's monthly AI quota.
+    # None      = tier default (PlanLimits.ai_questions_per_month) applies
+    # -1        = unlimited, regardless of tier
+    # 0 yoki N  = shu foydalanuvchi uchun aniq oylik son (tier'dan mustaqil)
+    ai_questions_quota_override: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+
     referral_code: Mapped[str | None] = mapped_column(
         String(20), unique=True, index=True, nullable=True
     )

@@ -149,6 +149,20 @@ class SubscriptionService:
                 "Paid plans require the billing flow: POST /billing/payments, "
                 "upload a receipt, then wait for admin approval.",
             )
+        # The "teacher" plan row is priced at 0 here on purpose — its real
+        # price lives on TeacherPackage and is only ever collected through
+        # the manual-review flow at POST /billing/teacher-package/purchase.
+        # Without this guard, price == 0 would let this direct-subscribe
+        # shortcut grant the TEACHER tier for free, repeatedly, with no
+        # payment, no receipt, and no admin approval.
+        plan_tier = (plan.tier or "").upper()
+        plan_interval = plan.interval.value if hasattr(plan.interval, "value") else plan.interval
+        if plan_tier == "TEACHER" or plan_interval == "lifetime":
+            raise HTTPException(
+                400,
+                "The Teacher plan is a one-time purchase and must go through "
+                "POST /billing/teacher-package/purchase, not direct subscribe.",
+            )
 
         sub = await self.activate_or_renew(user_id, plan_id, payment_id)
         await self.db.commit()
@@ -241,13 +255,13 @@ class SubscriptionService:
         defaults = [
             {
                 "name": "free",
-                "display_name": "Free",
-                "description": "For personal use and trying the platform",
+                "display_name": "Bepul",
+                "description": "Sinab ko'rish uchun asosiy kirish.",
                 "tier": "FREE",
                 "interval": "monthly",
                 "price": 0,
-                "max_tests": 5,
-                "max_attempts_per_test": 3,
+                "max_tests": 10,
+                "max_attempts_per_test": -1,
                 "max_participants_per_test": 30,
                 "ai_generation": False,
                 "advanced_ai": False,
@@ -255,29 +269,47 @@ class SubscriptionService:
                 "priority_support": False,
                 "sort_order": 1,
             },
+            # TEACHER tiери — bir martalik TeacherPackage orqali beriladi,
+            # lekin subscription jadvalida ham saqlaymiz (reference uchun).
+            {
+                "name": "teacher",
+                "display_name": "Teacher",
+                "description": "Bir martalik to'lov — umrbod o'qituvchi kirishi.",
+                "tier": "TEACHER",
+                "interval": "lifetime",
+                "price": 0,  # haqiqiy narx TeacherPackage.price
+                "max_tests": 10,
+                "max_attempts_per_test": -1,
+                "max_participants_per_test": 30,
+                "ai_generation": True,
+                "advanced_ai": False,
+                "certificate": False,
+                "priority_support": False,
+                "sort_order": 2,
+            },
             {
                 "name": "pro",
                 "display_name": "Pro",
-                "description": "For professional educators and small teams",
+                "description": "Professional o'qituvchilar va kichik jamoalar uchun.",
                 "tier": "PRO",
                 "interval": "monthly",
-                "price": 29,
-                "max_tests": 50,
+                "price": 99000,
+                "max_tests": 100,
                 "max_attempts_per_test": -1,
-                "max_participants_per_test": 300,
+                "max_participants_per_test": 500,
                 "ai_generation": True,
                 "advanced_ai": False,
-                "certificate": True,
-                "priority_support": True,
-                "sort_order": 2,
+                "certificate": False,
+                "priority_support": False,
+                "sort_order": 3,
             },
             {
                 "name": "premium",
                 "display_name": "Premium",
-                "description": "Full-featured plan with advanced AI and priority support",
+                "description": "To'liq imkoniyatlar, kengaytirilgan AI va prioritet yordam.",
                 "tier": "PREMIUM",
                 "interval": "monthly",
-                "price": 199,
+                "price": 199000,
                 "max_tests": -1,
                 "max_attempts_per_test": -1,
                 "max_participants_per_test": -1,
@@ -286,7 +318,7 @@ class SubscriptionService:
                 "certificate": True,
                 "priority_support": True,
                 "custom_branding": True,
-                "sort_order": 3,
+                "sort_order": 4,
             },
         ]
         for d in defaults:

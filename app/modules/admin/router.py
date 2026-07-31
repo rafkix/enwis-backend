@@ -21,6 +21,7 @@ from app.modules.admin.schemas import (
     AdminRejectPaymentRequest,
     AdminUserListItem,
     AdminUserListResponse,
+    UpdateUserAIQuotaRequest,
     UpdateUserRolesRequest,
     UpdateUserStatusRequest,
 )
@@ -102,6 +103,19 @@ async def update_user_roles(
     service: AdminService = Depends(get_service),
 ):
     return await service.update_user_roles(admin, user_id, payload.roles)
+
+
+@router.patch("/users/{user_id}/ai-quota", response_model=AdminUserListItem)
+async def update_user_ai_quota(
+    user_id: uuid.UUID,
+    payload: UpdateUserAIQuotaRequest,
+    admin: User = Depends(require_admin),
+    service: AdminService = Depends(get_service),
+):
+    """Override a user's monthly AI question quota (null clears it, -1 = unlimited)."""
+    return await service.update_user_ai_quota(
+        admin, user_id, payload.quota_override, payload.reason
+    )
 
 
 @router.delete("/users/{user_id}", status_code=204)

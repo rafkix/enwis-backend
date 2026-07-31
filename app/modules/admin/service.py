@@ -15,9 +15,11 @@ from app.modules.admin.schemas import (
     AdminDashboardResponse,
     AdminPaymentSummary,
     AdminSubscriptionSummary,
+    AdminTeacherPurchaseSummary,
     AdminUserSummary,
 )
 from app.modules.auth.models import Role, User, UserStatus
+from app.modules.billing.service import BillingService as TeacherPackageBillingService
 from app.modules.exams.models import Certificate, Exam, ExamAttempt
 from app.modules.notifications.models import NotificationPriority, NotificationType
 from app.modules.notifications.service import NotificationService
@@ -111,6 +113,7 @@ class AdminService:
         self.audit_repo = AdminAuditLogRepository(db)
         self.sub_service = SubscriptionService(db)
         self.billing_service = BillingService(db)
+        self.teacher_billing_service = TeacherPackageBillingService(db)
         self.notifications = NotificationService(db)
 
     # ── Dashboard ───────────────────────────────────────────────
@@ -149,6 +152,11 @@ class AdminService:
 
         status_counts = await self.payment_repo.count_by_status()
         total_revenue = await self.payment_repo.sum_approved_amount()
+
+        teacher_status_counts = await self.teacher_billing_service.count_teacher_purchases_by_status()
+        teacher_revenue = await self.teacher_billing_service.sum_completed_teacher_amount()
+        teacher_pending = teacher_status_counts.get("pending", 0)
+        teacher_waiting_for_review = teacher_status_counts.get("waiting_for_review", 0)
 
         active_subs = (
             await self.db.execute(
@@ -196,6 +204,22 @@ class AdminService:
                 expired=status_counts.get(PaymentStatus.EXPIRED.value, 0),
                 cancelled=status_counts.get(PaymentStatus.CANCELLED.value, 0),
                 total_revenue=total_revenue,
+                combined_pending=status_counts.get(PaymentStatus.PENDING.value, 0)
+                + teacher_pending,
+                combined_waiting_for_review=status_counts.get(
+                    PaymentStatus.WAITING_FOR_REVIEW.value, 0
+                )
+                + teacher_waiting_for_review,
+                combined_revenue=total_revenue + teacher_revenue,
+                teacher_purchases=AdminTeacherPurchaseSummary(
+                    pending=teacher_pending,
+                    waiting_for_review=teacher_waiting_for_review,
+                    completed=teacher_status_counts.get("completed", 0),
+                    rejected=teacher_status_counts.get("rejected", 0),
+                    expired=teacher_status_counts.get("expired", 0),
+                    cancelled=teacher_status_counts.get("cancelled", 0),
+                    revenue=teacher_revenue,
+                ),
             ),
             subscriptions=AdminSubscriptionSummary(
                 active=active_subs,
@@ -288,6 +312,53 @@ class AdminService:
             )
         except Exception:
             logger.exception("Failed to notify user of status change")
+
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
+    async def update_user_ai_quota(
+        self,
+        admin: User,
+        user_id: uuid.UUID,
+        quota_override: int | None,
+        reason: str | None,
+    ) -> User:
+        """Set or clear a per-user override of the tier's monthly AI quota.
+
+        None clears the override (tier default applies again), -1 grants
+        unlimited AI questions, and any N >= 0 fixes the monthly quota for
+        this user regardless of their subscription tier.
+        """
+        user = await self.get_user(user_id)
+        old_override = user.ai_questions_quota_override
+        user.ai_questions_quota_override = quota_override
+
+        detail = f"{old_override} -> {quota_override}" + (f" ({reason})" if reason else "")
+        await self.audit_repo.add(
+            admin.id,
+            AdminAction.USER_AI_QUOTA_CHANGED.value,
+            "user",
+            str(user.id),
+            detail=detail,
+        )
+        try:
+            if quota_override is None:
+                message = "Sizning AI savol kvotangiz tarif bo'yicha standart holatga qaytarildi."
+            elif quota_override == -1:
+                message = "Sizga cheksiz AI savol kvotasi berildi."
+            else:
+                message = f"Sizning oylik AI savol kvotangiz {quota_override} taga o'zgartirildi."
+            await self.notifications.create(
+                user_id=user.id,
+                type=NotificationType.SYSTEM,
+                title="AI quota updated",
+                message=message + (f" Sabab: {reason}" if reason else ""),
+                priority=NotificationPriority.NORMAL,
+                data={"ai_questions_quota_override": quota_override},
+            )
+        except Exception:
+            logger.exception("Failed to notify user of AI quota change")
 
         await self.db.commit()
         await self.db.refresh(user)

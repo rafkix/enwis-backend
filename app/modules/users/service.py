@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.plans import PlanTier, get_plan_features, get_user_plan_tier
+from app.core.plans import PlanTier, get_ai_monthly_limit, get_plan_features, get_user_plan_tier
 from app.core.security import hash_password, verify_password
 from app.modules.auth.models import PhoneVerification, Session, User
 from app.modules.auth.providers import ConsoleSMSProvider, EskizSMSProvider
@@ -54,8 +54,7 @@ class UserService:
         self.db = db
 
     def _now(self) -> datetime:
-        from datetime import UTC
-        return datetime.now(UTC)
+        return datetime.utcnow()
 
     def _deep_merge(self, base: dict, incoming: dict) -> dict:
         result = base.copy()
@@ -75,6 +74,31 @@ class UserService:
                 meta = UserMeta.model_validate(user.meta)
             except Exception as e:
                 logger.warning("UserMeta parse error (user_id=%s): %s", user.id, e)
+
+        is_teacher = any(r.name.upper() == "TEACHER" for r in (user.roles or []))
+
+        sub_tier = getattr(user, "subscription_tier", "FREE") or "FREE"
+        sub_expires = getattr(user, "subscription_tier_expires_at", None)
+        has_active_sub = False
+        sub_status = None
+        if sub_tier and sub_tier.upper() != "FREE":
+            if sub_expires and sub_expires > self._now():
+                has_active_sub = True
+                sub_status = "active"
+            elif sub_expires:
+                sub_status = "expired"
+            else:
+                has_active_sub = True
+                sub_status = "active"
+
+        # Google/Telegram orqali ro'yxatdan o'tgan foydalanuvchilar parolsiz
+        # va telefonsiz keladi. Endi bunday hollarda parol o'rnatish haqida
+        # bezovta qilmaymiz — buning o'rniga telefonni tasdiqlashni talab
+        # qilamiz (frontend shu flagga qarab tegishli bannerni ko'rsatadi).
+        signed_up_via_social = bool(user.is_google_verified or user.is_telegram_verified)
+        requires_phone_verification = signed_up_via_social and not user.phone_verified
+        requires_password_setup = (not bool(user.password_hash)) and not signed_up_via_social
+
         return UserResponse(
             id=user.id,
             public_id=user.public_id,
@@ -92,10 +116,18 @@ class UserService:
             roles=[r.name for r in user.roles] if user.roles else [],
             meta=meta,
             has_password=bool(user.password_hash),
+            requires_phone_verification=requires_phone_verification,
+            requires_password_setup=requires_password_setup,
             referral_code=getattr(user, "referral_code", None),
             xp=getattr(user, "xp", 0),
             level=getattr(user, "level", 1),
             streak=getattr(user, "streak", 0),
+            is_teacher=is_teacher,
+            teacher_verified_at=getattr(user, "teacher_verified_at", None),
+            subscription_tier=sub_tier,
+            subscription_status=sub_status,
+            subscription_expires_at=sub_expires,
+            has_active_subscription=has_active_sub,
             created_at=user.created_at,
             updated_at=user.updated_at,
         )
@@ -133,15 +165,43 @@ class UserService:
 
     async def update_profile(self, user: User, data) -> dict:
         if data.username is not None:
+            cleaned = data.username.strip().lower()
+            if not re.match(r"^[a-zA-Z0-9._]{3,30}$", cleaned):
+                raise HTTPException(400, "Username must be 3-30 characters and contain only letters, numbers, underscores, and dots")
             res = await self.db.execute(
-                select(User).where(User.username == data.username, User.id != user.id)
+                select(User).where(User.username == cleaned, User.id != user.id)
             )
             if res.scalar_one_or_none():
                 raise HTTPException(400, "Username already taken")
-            user.username = data.username
+            user.username = cleaned
 
         if data.full_name is not None:
-            user.full_name = data.full_name
+            cleaned = data.full_name.strip()
+            if len(cleaned) < 2 or len(cleaned) > 255:
+                raise HTTPException(400, "Full name must be between 2 and 255 characters")
+            user.full_name = cleaned
+
+        if data.email is not None:
+            cleaned = data.email.strip().lower()
+            if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", cleaned):
+                raise HTTPException(400, "Invalid email format")
+            res = await self.db.execute(
+                select(User).where(User.email == cleaned, User.id != user.id)
+            )
+            if res.scalar_one_or_none():
+                raise HTTPException(400, "Email already in use")
+            user.email = cleaned
+
+        if data.phone is not None:
+            cleaned = re.sub(r"[\s\-\(\)]", "", data.phone.strip())
+            if not re.match(r"^\+?[0-9]{7,15}$", cleaned):
+                raise HTTPException(400, "Invalid phone number format")
+            res = await self.db.execute(
+                select(User).where(User.phone == cleaned, User.id != user.id)
+            )
+            if res.scalar_one_or_none():
+                raise HTTPException(400, "Phone number already in use")
+            user.phone = cleaned
 
         if data.meta is not None:
             current_meta: dict = {}
@@ -336,6 +396,9 @@ class UserService:
                 status=status,
                 expires_at=expires_at,
                 features=plan_features["features"],
+                ai_questions_used=getattr(user, "ai_questions_used", 0) or 0,
+                ai_questions_monthly_limit=get_ai_monthly_limit(tier),
+                ai_questions_reset_at=getattr(user, "ai_questions_reset_at", None),
             ),
             referral=ReferralSummary(
                 referral_code=code,

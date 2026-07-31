@@ -6,6 +6,9 @@ from app.modules.auth.dependencies import get_active_user
 from app.modules.auth.models import User
 from app.modules.dashboard.schemas import DashboardStatsResponse, PublicStatsResponse
 from app.modules.dashboard.service import DashboardService, PublicStatsService
+from app.modules.dashboard.teacher_schemas import TeacherDashboardResponse
+from app.modules.dashboard.teacher_service import TeacherDashboardService
+from app.shared.permissions import require_teacher_or_admin
 
 # ── Authenticated dashboard router ────────────────────────────────
 
@@ -31,6 +34,28 @@ async def get_dashboard_stats(
 ) -> DashboardStatsResponse:
     service = DashboardService(db)
     return await service.get_user_stats(user)
+
+
+@dashboard_router.get(
+    "/teacher",
+    response_model=TeacherDashboardResponse,
+    summary="Get teacher dashboard statistics",
+    description=(
+        "Returns statistics scoped to the authenticated teacher's own "
+        "content: total/active students, tests, exams, questions, average "
+        "score, average difficulty, completion rate, test/exam attempts, "
+        "success (pass/fail) rate, student growth, recent activity, and "
+        "weekly/monthly trend series. Requires the TEACHER or ADMIN role."
+    ),
+    responses={403: {"description": "Teacher or admin role is required."}},
+)
+async def get_teacher_dashboard(
+    user: User = Depends(get_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> TeacherDashboardResponse:
+    require_teacher_or_admin(user)
+    service = TeacherDashboardService(db)
+    return await service.get_teacher_dashboard(user)
 
 
 # ── Public stats router ──────────────────────────────────────────

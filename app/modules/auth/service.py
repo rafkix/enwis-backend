@@ -702,11 +702,14 @@ class AuthService:
         return await self._create_session(user, request)
 
     def _verify_telegram_data(self, data: dict) -> dict:
+
         data = data.copy()
         check_hash = data.pop("hash", None)
         if not check_hash:
             raise HTTPException(401, "Missing Telegram hash")
-        data_check = "\n".join(str(value) for value in data.values())
+        data_check = "\n".join(
+            f"{k}={v}" for k, v in sorted(data.items())
+        )
         secret = hashlib.sha256(settings.TELEGRAM_BOT_TOKEN.encode()).digest()
         calculated = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calculated, check_hash):

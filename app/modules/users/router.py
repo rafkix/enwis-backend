@@ -1,12 +1,11 @@
-from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.modules.auth.dependencies import get_current_user
-from app.modules.auth.models import Role, User
+from app.modules.auth.models import User
 from app.modules.users.schemas import (
     ApiResponse,
     DeleteAccountSchema,
@@ -297,41 +296,161 @@ async def verify_phone_update(
 @router.post(
     "/me/become-teacher",
     response_model=ApiResponse,
-    summary="Request teacher role",
-    description="Submits a request to become a teacher. Requires Google or Telegram verification.",
+    summary="Teacher role info",
+    description="Teacher role is now obtained by purchasing the Teacher Package via POST /api/v1/billing/teacher-package/purchase",
     responses={
-        200: {"description": "Request submitted successfully."},
-        400: {"description": "Already a teacher or other error."},
-        403: {"description": "Forbidden — Google or Telegram account not verified."},
+        400: {"description": "Must purchase teacher package."},
         **_base,
     },
 )
 async def become_teacher(
     user: User = Depends(get_current_user),
+):
+
+    return ApiResponse(
+        message="Teacher role is obtained by purchasing the Teacher Package. "
+        "Use POST /api/v1/billing/teacher-package/purchase instead.",
+        data={"purchase_endpoint": "/api/v1/billing/teacher-package/purchase"},
+    )
+
+
+@router.get(
+    "/me/teacher-status",
+    response_model=ApiResponse,
+    summary="Get teacher status and purchase info",
+    responses={200: {"description": "Teacher status returned."}, **_401},
+)
+async def get_teacher_status(
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not user.is_google_verified and not user.is_telegram_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You must verify your Google or Telegram account before becoming a teacher",
+    from app.modules.billing.models import TeacherPurchase
+
+    is_teacher = any(r.name.upper() == "TEACHER" for r in (user.roles or []))
+    purchase = None
+    if is_teacher:
+        result = await db.execute(
+            select(TeacherPurchase)
+            .where(TeacherPurchase.user_id == user.id, TeacherPurchase.status == "completed")
+            .order_by(TeacherPurchase.purchased_at.desc())
+            .limit(1)
         )
+        purchase = result.scalar_one_or_none()
 
-    teacher_role = await db.execute(select(Role).where(Role.name == "TEACHER"))
-    teacher_role = teacher_role.scalar_one_or_none()
+    return ApiResponse(data={
+        "is_teacher": is_teacher,
+        "teacher_verified_at": user.teacher_verified_at.isoformat() if user.teacher_verified_at else None,
+        "purchase": {
+            "amount": purchase.amount,
+            "currency": purchase.currency,
+            "purchased_at": purchase.purchased_at.isoformat(),
+        } if purchase else None,
+    })
 
-    if not teacher_role:
-        teacher_role = Role(name="TEACHER", description="Teacher role")
-        db.add(teacher_role)
-        await db.flush()
 
-    if any(r.id == teacher_role.id for r in user.roles):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Already a teacher",
-        )
+@router.get(
+    "/me/purchases",
+    response_model=ApiResponse,
+    summary="Get purchase history (teacher package)",
+    responses={200: {"description": "Purchase history returned."}, **_401},
+)
+async def get_my_purchases(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.modules.billing.models import TeacherPurchase
 
-    user.roles.append(teacher_role)
-    user.teacher_verified_at = datetime.now(UTC)
-    await db.commit()
+    result = await db.execute(
+        select(TeacherPurchase)
+        .where(TeacherPurchase.user_id == user.id)
+        .order_by(TeacherPurchase.purchased_at.desc())
+    )
+    purchases = result.scalars().all()
+    return ApiResponse(data={
+        "items": [
+            {
+                "id": str(p.id),
+                "amount": p.amount,
+                "currency": p.currency,
+                "payment_method": p.payment_method,
+                "status": p.status,
+                "purchased_at": p.purchased_at.isoformat(),
+            }
+            for p in purchases
+        ]
+    })
 
-    return ApiResponse(message="Successfully became a teacher")
+
+@router.get(
+    "/me/payments",
+    response_model=ApiResponse,
+    summary="Get payment history (subscription payments)",
+    responses={200: {"description": "Payment history returned."}, **_401},
+)
+async def get_my_payments(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+):
+    from app.modules.subscriptions.repository import PaymentRepository
+
+    repo = PaymentRepository(db)
+    payments, total = await repo.list_by_user(user.id, page, per_page)
+    return ApiResponse(data={
+        "items": [
+            {
+                "id": str(p.id),
+                "plan_id": str(p.plan_id) if p.plan_id else None,
+                "plan_name": p.plan.display_name if p.plan else None,
+                "amount": p.amount,
+                "currency": p.currency,
+                "status": p.status.value if hasattr(p.status, "value") else p.status,
+                "method": p.method,
+                "created_at": p.created_at.isoformat(),
+                "reviewed_at": p.reviewed_at.isoformat() if p.reviewed_at else None,
+            }
+            for p in payments
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    })
+
+
+@router.get(
+    "/me/ai-usage",
+    response_model=ApiResponse,
+    summary="Get current AI usage and monthly limit",
+    description=(
+        "Joriy oyda foydalanilgan AI savol soni va oylik limitni qaytaradi. "
+        "FREE tier: yo'q (0/0). TEACHER: 10. PRO: 50. PREMIUM: 100."
+    ),
+    responses={200: {"description": "AI usage stats"}, **_401},
+)
+async def get_ai_usage(user: User = Depends(get_current_user)):
+    from datetime import UTC, datetime
+
+    from app.core.plans import get_ai_monthly_limit, get_user_plan_tier
+
+    tier = get_user_plan_tier(user.subscription_tier)
+    override = getattr(user, "ai_questions_quota_override", None)
+    monthly_limit = override if override is not None else get_ai_monthly_limit(tier)
+    used = getattr(user, "ai_questions_used", 0) or 0
+    reset_at = getattr(user, "ai_questions_reset_at", None)
+
+    # Oy tekshiruvi — agar yangi oy boshlangan bo'lsa, used = 0 ko'rsatamiz
+    if reset_at is not None:
+        now = datetime.now(UTC)
+        if reset_at.year != now.year or reset_at.month != now.month:
+            used = 0
+
+    return ApiResponse(data={
+        "tier": tier.value,
+        "ai_questions_used": used,
+        "ai_questions_monthly_limit": monthly_limit,
+        "ai_questions_remaining": max(0, monthly_limit - used) if monthly_limit != -1 else -1,
+        "ai_questions_reset_at": reset_at.isoformat() if reset_at else None,
+        "has_ai_access": monthly_limit != 0,
+        "is_custom_quota": override is not None,
+    })

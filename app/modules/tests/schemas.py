@@ -242,3 +242,98 @@ class TestPracticeStartResponse(BaseModel):
     expires_at: datetime | None = None
     questions: list[TestPracticeQuestionItem]
 
+
+# ── Rasch (1-parameter IRT) ─────────────────────────────────────────
+
+
+class RaschCalibrateRequest(BaseModel):
+    question_ids: list[UUID] | None = Field(
+        default=None,
+        description="Kalibrlanadigan savollar. Berilmasa — owner'ning "
+        "barcha savollari kalibrlanadi.",
+    )
+
+
+class RaschCalibratedItem(BaseModel):
+    question_id: UUID
+    irt_b: float
+
+
+class RaschCalibrateResponse(BaseModel):
+    calibrated: int
+    skipped: int
+    n_responses: int
+    n_persons: int = 0
+    converged: bool
+    iterations: int = 0
+    items: list[RaschCalibratedItem]
+
+
+class RaschGenerateTestRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    target_theta: float = Field(
+        0.0, ge=-4, le=4,
+        description="Maqsadli qobiliyat darajasi (logit shkala, taxminan "
+        "-4..+4). 0 — o'rtacha, manfiy — pastroq, musbat — yuqoriroq.",
+    )
+    num_questions: int = Field(..., ge=1, le=200)
+    question_bank_id: UUID | None = None
+    category_id: UUID | None = None
+    require_calibrated: bool = True
+    min_gap: float = Field(
+        0.0, ge=0,
+        description="Tanlangan savollar qiyinliklari orasidagi minimal "
+        "farq (logit). 0 — cheklovsiz, eng informativ savollar tanlanadi.",
+    )
+
+
+class RaschInformationPoint(BaseModel):
+    theta: float
+    information: float
+
+
+class RaschGenerateTestResponse(BaseModel):
+    test: TestResponse
+    target_theta: float
+    selected_question_ids: list[UUID]
+    difficulty_spread: dict
+    information_curve: list[RaschInformationPoint]
+
+
+class QuestionAnalysisItem(BaseModel):
+    """Classical test theory (CTT) item analysis for a single question,
+    computed from real answer history (test_practice_answers +
+    question_answers). Not to be confused with Rasch/IRT calibration
+    (`irt_b`) — both are surfaced here side by side.
+    """
+
+    question_id: UUID
+    title: str
+    question_type: str
+    difficulty: str
+    irt_b: float | None = None
+    irt_calibrated_at: datetime | None = None
+
+    times_answered: int = 0
+    correct_count: int = 0
+    wrong_count: int = 0
+    correct_rate: float = 0.0  # p-value, percent
+
+    # Point-biserial correlation between getting this item right and the
+    # attempt's overall percentage. Roughly -1..1; None if there isn't
+    # enough data (need at least one correct AND one incorrect answer,
+    # with non-zero score variance) to compute it.
+    discrimination: float | None = None
+
+    # "ok" | "too_easy" | "too_hard" | "poor_discrimination" | "insufficient_data"
+    flag: str = "insufficient_data"
+
+
+class TestQuestionAnalysisResponse(BaseModel):
+    test_id: UUID
+    questions_count: int
+    total_answers_considered: int
+    items: list[QuestionAnalysisItem]
+
+

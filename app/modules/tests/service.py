@@ -1,5 +1,6 @@
 import os
 import uuid
+from collections import defaultdict
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, UploadFile
@@ -25,6 +26,8 @@ from app.modules.tests.constants import (
 )
 from app.modules.tests.models import (
     Test,
+    TestPracticeAnswer,
+    TestPracticeAttempt,
     TestQuestion,
     TestSettings,
 )
@@ -772,6 +775,144 @@ class TestService:
             "average_score": round(avg_score, 2),
             "average_time_seconds": round(avg_time_seconds, 1),
             "last_updated": test.updated_at,
+        }
+
+    # ── Question item analysis (CTT: p-value + discrimination) ─────────
+
+    async def analyze_questions(self, test_id: uuid.UUID, owner_id: uuid.UUID) -> dict:
+        """Per-question analysis for a test, computed from real answer
+        history — separate from (and complementary to) the Rasch/IRT
+        calibration in `app.modules.questions.rasch`.
+
+        For every question in the test:
+          - times_answered / correct_count / wrong_count / correct_rate
+            (classical "p-value" difficulty index)
+          - discrimination: point-biserial correlation between answering
+            this item correctly and the attempt's overall percentage
+          - a `flag` calling out questions worth a teacher's attention
+            (too easy, too hard, poorly discriminating, or not enough
+            data yet to judge)
+        """
+        from app.modules.exams.models import Exam, ExamAttempt, QuestionAnswer, Result
+
+        test = await self.get_test(test_id, owner_id)
+        tqs = await self.tq_repo.list_by_test(test_id)
+
+        # (question_id, is_correct, attempt_percentage) triples from both
+        # answer sources that exist for this Test.
+        practice_rows = (
+            await self.db.execute(
+                select(
+                    TestPracticeAnswer.question_id,
+                    TestPracticeAnswer.is_correct,
+                    TestPracticeAttempt.percentage,
+                )
+                .join(TestPracticeAttempt, TestPracticeAttempt.id == TestPracticeAnswer.attempt_id)
+                .where(
+                    TestPracticeAttempt.test_id == test_id,
+                    TestPracticeAttempt.status == "completed",
+                )
+            )
+        ).all()
+
+        exam_rows = (
+            await self.db.execute(
+                select(
+                    QuestionAnswer.question_id,
+                    QuestionAnswer.is_correct,
+                    Result.percentage,
+                    ExamAttempt.score,
+                    ExamAttempt.total_points,
+                )
+                .join(ExamAttempt, ExamAttempt.id == QuestionAnswer.attempt_id)
+                .join(Exam, Exam.id == ExamAttempt.exam_id)
+                .outerjoin(Result, Result.attempt_id == ExamAttempt.id)
+                .where(Exam.test_id == test_id, ExamAttempt.is_completed.is_(True))
+            )
+        ).all()
+
+        pairs_by_question: dict[uuid.UUID, list[tuple[bool, float]]] = defaultdict(list)
+        for question_id, is_correct, percentage in practice_rows:
+            if question_id is None or is_correct is None:
+                continue
+            pairs_by_question[question_id].append((bool(is_correct), percentage or 0.0))
+        for question_id, is_correct, result_pct, score, total_points in exam_rows:
+            if question_id is None or is_correct is None:
+                continue
+            pct = (
+                result_pct
+                if result_pct is not None
+                else (round(score / total_points * 100, 2) if total_points else 0.0)
+            )
+            pairs_by_question[question_id].append((bool(is_correct), pct))
+
+        total_answers = sum(len(v) for v in pairs_by_question.values())
+        items = []
+        for tq in tqs:
+            q = tq.question
+            pairs = pairs_by_question.get(tq.question_id, [])
+            items.append(self._analyze_one_question(q, pairs))
+
+        return {
+            "test_id": test.id,
+            "questions_count": len(tqs),
+            "total_answers_considered": total_answers,
+            "items": items,
+        }
+
+    @staticmethod
+    def _analyze_one_question(question, pairs: list[tuple[bool, float]]) -> dict:
+        times_answered = len(pairs)
+        correct_count = sum(1 for is_correct, _ in pairs if is_correct)
+        wrong_count = times_answered - correct_count
+        correct_rate = round(correct_count / times_answered * 100, 2) if times_answered else 0.0
+
+        discrimination = None
+        if times_answered >= 2:
+            correct_scores = [pct for is_correct, pct in pairs if is_correct]
+            wrong_scores = [pct for is_correct, pct in pairs if not is_correct]
+            if correct_scores and wrong_scores:
+                all_scores = [pct for _, pct in pairs]
+                mean_all = sum(all_scores) / len(all_scores)
+                variance = sum((s - mean_all) ** 2 for s in all_scores) / len(all_scores)
+                std_all = variance**0.5
+                if std_all > 1e-9:
+                    mean_correct = sum(correct_scores) / len(correct_scores)
+                    mean_wrong = sum(wrong_scores) / len(wrong_scores)
+                    p = correct_count / times_answered
+                    q_ = 1 - p
+                    discrimination = round(
+                        (mean_correct - mean_wrong) / std_all * (p * q_) ** 0.5, 4
+                    )
+
+        if times_answered < 5:
+            flag = "insufficient_data"
+        elif correct_rate >= 90:
+            flag = "too_easy"
+        elif correct_rate <= 20:
+            flag = "too_hard"
+        elif discrimination is not None and discrimination < 0.1:
+            flag = "poor_discrimination"
+        else:
+            flag = "ok"
+
+        return {
+            "question_id": question.id,
+            "title": question.title,
+            "question_type": question.question_type.value
+            if hasattr(question.question_type, "value")
+            else str(question.question_type),
+            "difficulty": question.difficulty.value
+            if hasattr(question.difficulty, "value")
+            else str(question.difficulty),
+            "irt_b": question.irt_b,
+            "irt_calibrated_at": question.irt_calibrated_at,
+            "times_answered": times_answered,
+            "correct_count": correct_count,
+            "wrong_count": wrong_count,
+            "correct_rate": correct_rate,
+            "discrimination": discrimination,
+            "flag": flag,
         }
 
     # ── Settings ──────────────────────────────────────────────────────

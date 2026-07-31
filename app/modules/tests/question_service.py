@@ -441,6 +441,230 @@ class QuestionService:
             "used_in_exams": used_in_exams,
         }
 
+    # ── Rasch (1-parameter IRT) ────────────────────────────────────
+
+    async def calibrate_rasch(
+        self,
+        owner_id: uuid.UUID,
+        question_ids: list[uuid.UUID] | None = None,
+        is_admin: bool = False,
+    ) -> dict:
+        """Real javob tarixi (test_practice_answers + question_answers)
+        asosida savollarning Rasch qiyinlik parametrini (irt_b) qayta
+        hisoblaydi va saqlaydi.
+
+        `question_ids` berilmasa — owner'ning barcha savollari
+        kalibrlanadi. Faqat egasining o'z savollari (yoki admin —
+        istalgani) kalibrlanishi mumkin.
+        """
+        from app.modules.exams.models import ExamAttempt, QuestionAnswer
+        from app.modules.questions.rasch import calibrate
+        from app.modules.tests.models import TestPracticeAnswer, TestPracticeAttempt
+
+        if question_ids:
+            q_result = await self.db.execute(
+                select(Question).where(Question.id.in_(question_ids))
+            )
+            questions = list(q_result.scalars().all())
+            for q in questions:
+                self._assert_question_owner(q, owner_id, is_admin)
+        else:
+            q_result = await self.db.execute(
+                select(Question).where(Question.owner_id == owner_id)
+            )
+            questions = list(q_result.scalars().all())
+
+        target_ids = {q.id for q in questions}
+        if not target_ids:
+            return {
+                "calibrated": 0, "skipped": 0, "n_responses": 0,
+                "converged": False, "items": [],
+            }
+
+        # test.enwis.uz (ungated practice) javoblari
+        practice_rows = (
+            await self.db.execute(
+                select(
+                    TestPracticeAttempt.user_id,
+                    TestPracticeAnswer.question_id,
+                    TestPracticeAnswer.is_correct,
+                )
+                .join(
+                    TestPracticeAttempt,
+                    TestPracticeAnswer.attempt_id == TestPracticeAttempt.id,
+                )
+                .where(
+                    TestPracticeAnswer.question_id.in_(target_ids),
+                    TestPracticeAnswer.is_correct.is_not(None),
+                    TestPracticeAttempt.status == "completed",
+                )
+            )
+        ).all()
+
+        # Ro'yxatdan o'tilgan imtihon (exam) javoblari
+        exam_rows = (
+            await self.db.execute(
+                select(
+                    ExamAttempt.user_id,
+                    QuestionAnswer.question_id,
+                    QuestionAnswer.is_correct,
+                )
+                .join(ExamAttempt, QuestionAnswer.attempt_id == ExamAttempt.id)
+                .where(
+                    QuestionAnswer.question_id.in_(target_ids),
+                    QuestionAnswer.is_correct.is_not(None),
+                    ExamAttempt.is_completed.is_(True),
+                )
+            )
+        ).all()
+
+        responses = [
+            (str(user_id), str(question_id), bool(is_correct))
+            for user_id, question_id, is_correct in (*practice_rows, *exam_rows)
+        ]
+
+        result = calibrate(responses)
+
+        now = self._now()
+        calibrated_count = 0
+        for q in questions:
+            b = result.item_difficulty.get(str(q.id))
+            if b is None:
+                continue
+            q.irt_b = b
+            q.irt_calibrated_at = now
+            n = sum(1 for _, qid, _ in responses if qid == str(q.id))
+            q.irt_n_responses = n
+            calibrated_count += 1
+
+        await self.db.commit()
+
+        return {
+            "calibrated": calibrated_count,
+            "skipped": len(target_ids) - calibrated_count,
+            "n_responses": len(responses),
+            "n_persons": result.n_persons,
+            "converged": result.converged,
+            "iterations": result.n_iterations,
+            "items": [
+                {"question_id": qid, "irt_b": b}
+                for qid, b in result.item_difficulty.items()
+                if uuid.UUID(qid) in target_ids
+            ],
+        }
+
+    async def generate_rasch_test(
+        self,
+        owner_id: uuid.UUID,
+        title: str,
+        target_theta: float,
+        num_questions: int,
+        question_bank_id: uuid.UUID | None = None,
+        category_id: uuid.UUID | None = None,
+        require_calibrated: bool = True,
+        min_gap: float = 0.0,
+        description: str | None = None,
+    ) -> dict:
+        """Rasch modeliga asoslangan test yaratadi: berilgan
+        `target_theta` (maqsadli qobiliyat darajasi, taxminan -3..+3
+        oralig'ida) uchun eng ko'p axborot beradigan `num_questions`
+        ta savolni tanlab, ulardan yangi Test yozuvi quradi.
+
+        `require_calibrated=True` bo'lsa faqat kalibratsiya qilingan
+        (irt_b to'ldirilgan) savollar orasidan tanlanadi — bu real
+        javob tarixiga asoslangan aniq tanlovni kafolatlaydi. Agar
+        kalibratsiya qilingan savol yetarli bo'lmasa, xatolik
+        qaytariladi (noto'g'ri/tasodifiy qiyinlik bilan test
+        yig'ilmasligi uchun).
+        """
+        from app.modules.questions.rasch import (
+            select_items_for_ability,
+            test_information_curve,
+        )
+        from app.modules.tests.models import Test, TestQuestion
+
+        query = select(Question).where(
+            Question.owner_id == owner_id,
+            Question.status == QuestionStatus.PUBLISHED,
+        )
+        if question_bank_id:
+            query = query.where(Question.question_bank_id == question_bank_id)
+        if category_id:
+            query = query.where(Question.category_id == category_id)
+        if require_calibrated:
+            query = query.where(Question.irt_b.is_not(None))
+
+        candidates = list((await self.db.execute(query)).scalars().all())
+
+        if require_calibrated and len(candidates) < num_questions:
+            from fastapi import HTTPException
+            raise HTTPException(
+                400,
+                f"Yetarli kalibratsiya qilingan savol yo'q "
+                f"(mavjud: {len(candidates)}, kerak: {num_questions}). "
+                "Avval POST /questions/rasch/calibrate orqali savollarni "
+                "kalibrlang, yoki require_calibrated=false bilan chaqiring "
+                "(bu holda kalibrlanmagan savollar difficulty enum'idan "
+                "taxminiy b bilan ishlatiladi).",
+            )
+
+        # Kalibrlanmagan savollarga difficulty enum'idan taxminiy b beramiz
+        # (require_calibrated=False bo'lganda ham ishlash uchun).
+        fallback_b = {"easy": -1.2, "medium": 0.0, "hard": 1.2}
+        pool: list[tuple[str, float]] = []
+        for q in candidates:
+            if q.irt_b is not None:
+                pool.append((str(q.id), q.irt_b))
+            elif not require_calibrated:
+                diff = q.difficulty.value if hasattr(q.difficulty, "value") else q.difficulty
+                pool.append((str(q.id), fallback_b.get(diff, 0.0)))
+
+        if len(pool) < num_questions:
+            from fastapi import HTTPException
+            raise HTTPException(
+                400,
+                f"Tanlov uchun yetarli savol yo'q (mavjud: {len(pool)}, "
+                f"kerak: {num_questions}).",
+            )
+
+        selected_ids = select_items_for_ability(pool, target_theta, num_questions, min_gap)
+        by_id = {str(q.id): q for q in candidates}
+        selected_questions = [by_id[qid] for qid in selected_ids]
+
+        test = Test(
+            title=title,
+            description=description
+            or f"Rasch modeli asosida yaratilgan test (maqsadli qobiliyat = {target_theta})",
+            test_type="rasch",
+            status="draft",
+            owner_id=owner_id,
+        )
+        self.db.add(test)
+        await self.db.flush()
+
+        for order, q in enumerate(selected_questions):
+            self.db.add(
+                TestQuestion(
+                    test_id=test.id, question_id=q.id, order=order, points=q.score,
+                )
+            )
+
+        await self.db.commit()
+        await self.db.refresh(test)
+
+        b_values = [by_id[qid].irt_b for qid in selected_ids if by_id[qid].irt_b is not None]
+
+        return {
+            "test": test,
+            "target_theta": target_theta,
+            "selected_question_ids": selected_ids,
+            "difficulty_spread": {
+                "min_b": min(b_values) if b_values else None,
+                "max_b": max(b_values) if b_values else None,
+            },
+            "information_curve": test_information_curve(b_values) if b_values else [],
+        }
+
     # ── Question Type Metadata ────────────────────────────────────
 
     async def list_question_types(self, active_only: bool = False) -> list:

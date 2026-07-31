@@ -1,0 +1,6 @@
+INFO:     127.0.0.1:52043 - "GET /api/v1/admin/teacher-purchases?page=1&per_page=100 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52043 - "GET /api/v1/admin/users/42e643bfba7b4cd48e81ee21ff81dec0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52043 - "GET /api/v1/admin/plans HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63457 - "OPTIONS /api/v1/notifications?page=1&per_page=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57040 - "GET /api/v1/notifications?page=1&per_page=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62712 - "GET /api/v1/notifications?page=1&per_page=8 HTTP/1.1" 200 OK

@@ -17,7 +17,7 @@ from app.modules.subscriptions.schemas import (
 from app.modules.subscriptions.service import BillingService
 from app.modules.subscriptions.models import PaymentMethod
 
-router = APIRouter(prefix="/billing", tags=["Billing"])
+router = APIRouter(prefix="/payments", tags=["Payments"])
 
 
 def get_service(db: AsyncSession = Depends(get_db)) -> BillingService:
