@@ -1,0 +1,18 @@
+INFO:     Started server process [20568]
+INFO:     Waiting for application startup.
+2026-07-31 04:48:27,343 - INFO - app.main - Starting Enwis Backend API...
+2026-07-31 04:48:27,436 - INFO - app.main - Database initialized
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-07-31 04:48:38,644 - INFO - app.middleware - \u2192  GET     /api/v1/admin/teacher-purchases
+2026-07-31 04:48:38,669 - INFO - app.middleware - \u2190  GET     /api/v1/admin/teacher-purchases | 200 | 25.9ms
+2026-07-31 04:48:38,670 - INFO - app.middleware - \u2192  GET     /api/v1/admin/users/42e643bfba7b4cd48e81ee21ff81dec0
+2026-07-31 04:48:38,677 - INFO - app.middleware - \u2190  GET     /api/v1/admin/users/42e643bfba7b4cd48e81ee21ff81dec0 | 200 | 6.8ms
+2026-07-31 04:48:38,678 - INFO - app.middleware - \u2192  GET     /api/v1/admin/plans
+2026-07-31 04:48:38,684 - INFO - app.middleware - \u2190  GET     /api/v1/admin/plans | 200 | 6.6ms
+2026-07-31 04:48:40,529 - INFO - app.middleware - \u2192  OPTIONS /api/v1/notifications
+2026-07-31 04:48:40,543 - INFO - app.middleware - \u2190  OPTIONS /api/v1/notifications | 200 | 14.6ms
+2026-07-31 04:48:40,855 - INFO - app.middleware - \u2192  GET     /api/v1/notifications
+2026-07-31 04:48:40,874 - INFO - app.middleware - \u2190  GET     /api/v1/notifications | 200 | 18.2ms
+2026-07-31 04:49:10,221 - INFO - app.middleware - \u2192  GET     /api/v1/notifications
+2026-07-31 04:49:10,245 - INFO - app.middleware - \u2190  GET     /api/v1/notifications | 200 | 23.7ms
